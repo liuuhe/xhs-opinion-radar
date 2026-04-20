@@ -21,14 +21,19 @@ interface LoginLock {
   createdAt: string;
   expiresAt: string;
   actionKey: string;
-  actionCursor: number;
+  actionCursor: string;
 }
 
 interface LoginActionCommand {
-  id: number;
+  id: string;
   action: "request_code" | "submit_code";
   code?: string;
   createdAt: string;
+}
+
+interface LoginActionResult {
+  message: string;
+  detail: string;
 }
 
 export function streamRemoteLogin(env: Env, url: URL): Response {
@@ -126,7 +131,7 @@ export async function handleRemoteLoginAction(env: Env, request: RemoteLoginActi
   }
 
   const command: LoginActionCommand = {
-    id: Date.now(),
+    id: `${Date.now()}:${crypto.randomUUID()}`,
     action,
     code: action === "submit_code" ? code : undefined,
     createdAt: new Date().toISOString()
@@ -151,11 +156,11 @@ async function streamLoginLoop(input: {
   let screenshotCount = 0;
 
   while (Date.now() < deadline) {
-    const actionMessage = await applyPendingLoginAction(input.env, input.page, input.lock);
-    if (actionMessage) {
+    const actionResult = await applyPendingLoginAction(input.env, input.page, input.lock);
+    if (actionResult) {
       input.send({
         stage: "login_action",
-        message: actionMessage,
+        message: `${actionResult.message} ${actionResult.detail}`,
         progress: 55,
         loginId: input.lock.loginId,
         screenshotDataUrl: await capturePageScreenshot(input.page),
@@ -230,7 +235,7 @@ async function clickLoginEntry(page: PageLike): Promise<void> {
   await page.waitForTimeout(800).catch(() => undefined);
 }
 
-async function applyPendingLoginAction(env: Env, page: PageLike, lock: LoginLock): Promise<string | null> {
+async function applyPendingLoginAction(env: Env, page: PageLike, lock: LoginLock): Promise<LoginActionResult | null> {
   const value = await env.PUBLIC_OPINION_KV.get(lock.actionKey);
   if (!value) {
     return null;
@@ -244,7 +249,7 @@ async function applyPendingLoginAction(env: Env, page: PageLike, lock: LoginLock
     return null;
   }
 
-  if (command.id <= lock.actionCursor) {
+  if (command.id === lock.actionCursor) {
     return null;
   }
 
@@ -252,54 +257,117 @@ async function applyPendingLoginAction(env: Env, page: PageLike, lock: LoginLock
   await updateLoginLock(env, lock);
 
   if (command.action === "request_code") {
-    await clickGetCode(page);
-    return "已在远程浏览器点击“获取验证码”。";
+    const detail = await clickGetCode(page);
+    return {
+      message: "已处理“获取验证码”动作。",
+      detail
+    };
   }
 
   if (command.action === "submit_code" && command.code) {
-    await fillAndSubmitCode(page, command.code);
-    return "已在远程浏览器填写并提交验证码。";
+    const detail = await fillAndSubmitCode(page, command.code);
+    return {
+      message: "已处理“提交验证码”动作。",
+      detail
+    };
   }
 
   return null;
 }
 
-async function clickGetCode(page: PageLike): Promise<void> {
+async function clickGetCode(page: PageLike): Promise<string> {
   await switchToPhoneLogin(page);
-  await page.evaluate(() => {
+  const result = await page.evaluate(() => {
     const candidates = Array.from(document.querySelectorAll("button, div, span, a"));
     const node = candidates.find((item) => (item.textContent || "").trim().includes("获取验证码")) as HTMLElement | undefined;
-    node?.click();
+    if (!node) {
+      return "没有找到“获取验证码”按钮。请先在远程页面完成必要扫码/手机号步骤。";
+    }
+    node.click();
+    return "已点击“获取验证码”按钮。";
   });
   await page.waitForTimeout(900).catch(() => undefined);
+  return result;
 }
 
-async function fillAndSubmitCode(page: PageLike, code: string): Promise<void> {
-  await switchToPhoneLogin(page);
-  await page.evaluate((verificationCode: string) => {
+async function fillAndSubmitCode(page: PageLike, code: string): Promise<string> {
+  const result = await page.evaluate((verificationCode: string) => {
+    const setNativeValue = (input: HTMLInputElement, value: string) => {
+      const prototype = Object.getPrototypeOf(input);
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+      descriptor?.set?.call(input, value);
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+
     const inputs = Array.from(document.querySelectorAll("input")) as HTMLInputElement[];
     const visibleInputs = inputs.filter((input) => {
       const rect = input.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0 && !input.disabled && input.type !== "hidden";
     });
-    const codeInput =
-      visibleInputs.find((input) => /验证码|code/i.test(input.placeholder || input.name || input.id)) ||
-      visibleInputs.at(-1);
-    if (codeInput) {
+
+    const codeInputs = visibleInputs.filter((input) => {
+      const metadata = [input.placeholder, input.name, input.id, input.autocomplete, input.inputMode, input.type]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      const rect = input.getBoundingClientRect();
+      return (
+        metadata.includes("验证码") ||
+        metadata.includes("code") ||
+        metadata.includes("otp") ||
+        metadata.includes("one-time") ||
+        metadata.includes("numeric") ||
+        input.maxLength === 1 ||
+        rect.width <= 80
+      );
+    });
+
+    if (codeInputs.length >= verificationCode.length && codeInputs.every((input) => input.maxLength === 1 || input.getBoundingClientRect().width <= 80)) {
+      verificationCode.split("").forEach((digit, index) => {
+        const input = codeInputs[index];
+        if (!input) {
+          return;
+        }
+        input.focus();
+        setNativeValue(input, digit);
+        input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: digit }));
+      });
+    } else {
+      const codeInput =
+        codeInputs.find((input) => input.maxLength !== 1) ||
+        visibleInputs.find((input) => /验证码|code|otp/i.test(input.placeholder || input.name || input.id || input.autocomplete)) ||
+        visibleInputs.at(-1);
+      if (!codeInput) {
+        return "没有找到可见验证码输入框。请确认远程页面已进入短信验证码步骤。";
+      }
       codeInput.focus();
-      codeInput.value = verificationCode;
-      codeInput.dispatchEvent(new Event("input", { bubbles: true }));
-      codeInput.dispatchEvent(new Event("change", { bubbles: true }));
+      setNativeValue(codeInput, verificationCode);
     }
 
-    const candidates = Array.from(document.querySelectorAll("button, div, span"));
+    const candidates = Array.from(document.querySelectorAll("button, div, span, a"));
     const submitNode = candidates.find((node) => {
       const text = (node.textContent || "").trim();
-      return text === "登录" || text.includes("登录");
+      const rect = (node as HTMLElement).getBoundingClientRect();
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        (text === "登录" ||
+          text === "确定" ||
+          text === "确认" ||
+          text.includes("提交") ||
+          text.includes("验证") ||
+          text.includes("下一步"))
+      );
     }) as HTMLElement | undefined;
-    submitNode?.click();
+    if (!submitNode) {
+      return `已填写验证码 ${verificationCode.length} 位，但没有找到提交按钮。请看截图确认是否需要手动再次扫码或点击。`;
+    }
+    submitNode.click();
+    return `已填写验证码 ${verificationCode.length} 位并点击“${(submitNode.textContent || "").trim()}”。`;
   }, code);
   await page.waitForTimeout(1200).catch(() => undefined);
+  return result;
 }
 
 async function switchToPhoneLogin(page: PageLike): Promise<void> {
@@ -415,7 +483,7 @@ async function acquireLoginLock(env: Env): Promise<
     createdAt: new Date().toISOString(),
     expiresAt,
     actionKey: loginActionKey(loginId),
-    actionCursor: 0
+    actionCursor: ""
   };
   await env.PUBLIC_OPINION_KV.put(
     LOGIN_LOCK_KEY,
