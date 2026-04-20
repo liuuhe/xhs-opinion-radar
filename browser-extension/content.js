@@ -71,8 +71,8 @@
   }
 
   async function scrollAndCapture(options) {
-    const scrollRounds = Number(options.scrollRounds || 5);
-    const scrollDelayMs = Number(options.scrollDelayMs || 900);
+    const scrollRounds = Number(options.scrollRounds || 3);
+    const scrollDelayMs = Number(options.scrollDelayMs || 550);
     const maxComments = Number(options.maxComments || 80);
     for (let index = 0; index < scrollRounds; index += 1) {
       const scroller = findCommentScroller();

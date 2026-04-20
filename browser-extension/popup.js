@@ -32,7 +32,7 @@ async function loadSettings() {
     workerUrl: DEFAULT_WORKER_URL,
     keyword: "",
     maxPosts: 10,
-    commentsPerPost: 30,
+    commentsPerPost: 20,
     engine: "llm"
   });
   elements.workerUrl.value = saved.workerUrl;
@@ -47,7 +47,7 @@ function saveSettings() {
     workerUrl: elements.workerUrl.value.trim() || DEFAULT_WORKER_URL,
     keyword: elements.keyword.value.trim(),
     maxPosts: Number(elements.maxPosts.value) || 10,
-    commentsPerPost: Number(elements.commentsPerPost.value) || 30,
+    commentsPerPost: Number(elements.commentsPerPost.value) || 20,
     engine: elements.engine.value
   });
 }
@@ -111,7 +111,7 @@ async function startAutoCapture() {
       workerUrl: elements.workerUrl.value.trim() || DEFAULT_WORKER_URL,
       keyword: decodeText(elements.keyword.value.trim()),
       maxPosts: Number(elements.maxPosts.value) || 10,
-      commentsPerPost: Number(elements.commentsPerPost.value) || 30,
+      commentsPerPost: Number(elements.commentsPerPost.value) || 20,
       engine: elements.engine.value
     }
   });
@@ -144,7 +144,7 @@ async function analyzeCapture() {
         keyword,
         engine: elements.engine.value,
         maxPosts: Number(elements.maxPosts.value) || 10,
-        commentsPerPost: Number(elements.commentsPerPost.value) || 30,
+        commentsPerPost: Number(elements.commentsPerPost.value) || 20,
         pageUrl: currentCapture.pageUrl,
         posts: currentCapture.posts
       })

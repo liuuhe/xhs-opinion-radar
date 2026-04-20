@@ -87,14 +87,14 @@ async function runAutoCapture(options) {
       });
 
       workerTabId = await openOrReuseWorkerTab(workerTabId, candidate.url);
-      await waitForTabComplete(workerTabId, 18000);
-      await delay(1800);
+      await waitForTabComplete(workerTabId, 12000);
+      await delay(1000);
 
       const capture = await sendCaptureMessage(workerTabId, {
         type: "XHS_CAPTURE_SCROLL_AND_GET",
-        maxComments: clampNumber(options.commentsPerPost, 30, 0, 80),
-        scrollRounds: 5,
-        scrollDelayMs: 900
+        maxComments: clampNumber(options.commentsPerPost, 20, 0, 80),
+        scrollRounds: 3,
+        scrollDelayMs: 550
       });
       const bestPost = pickBestPost(capture?.posts || [], candidate);
       if (!bestPost) {
@@ -107,14 +107,14 @@ async function runAutoCapture(options) {
         ...bestPost,
         url: bestPost.url || candidate.url,
         title: bestPost.title || candidate.title || "小红书帖子",
-        comments: (bestPost.comments || []).slice(0, clampNumber(options.commentsPerPost, 30, 0, 80))
+        comments: (bestPost.comments || []).slice(0, clampNumber(options.commentsPerPost, 20, 0, 80))
       });
 
       updateStatus({
         capturedPosts: capturedPosts.length,
         capturedComments: capturedPosts.reduce((sum, post) => sum + (post.comments?.length || 0), 0)
       });
-      await delay(900);
+      await delay(350);
     }
 
     if (capturedPosts.length === 0) {
@@ -165,7 +165,7 @@ async function analyzeCapturedPosts(options, searchCapture, posts) {
       keyword: decodeText(options.keyword || searchCapture?.keywordGuess || "小红书"),
       engine: options.engine || "llm",
       maxPosts: clampNumber(options.maxPosts, 10, 1, 30),
-      commentsPerPost: clampNumber(options.commentsPerPost, 30, 0, 80),
+      commentsPerPost: clampNumber(options.commentsPerPost, 20, 0, 80),
       pageUrl: searchCapture?.pageUrl || "",
       sourcePageUrl: searchCapture?.pageUrl || "",
       persistReport: true,
