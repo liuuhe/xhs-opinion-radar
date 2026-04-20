@@ -1,8 +1,8 @@
-import type { AnalyzeRequest } from "../src/shared/types";
+import type { AnalyzeRequest, RemoteLoginActionRequest } from "../src/shared/types";
 import { analyzeKeyword, streamAnalyzeKeyword } from "./analyze";
 import { ApiError, type Env } from "./env";
 import { errorResponse, jsonResponse, optionsResponse } from "./http";
-import { streamRemoteLogin } from "./login";
+import { handleRemoteLoginAction, streamRemoteLogin } from "./login";
 import { getSessionStatus } from "./session";
 
 export default {
@@ -49,6 +49,15 @@ export default {
 
     if (url.pathname === "/api/login/stream" && request.method === "GET") {
       return streamRemoteLogin(env, url);
+    }
+
+    if (url.pathname === "/api/login/action" && request.method === "POST") {
+      try {
+        const body = (await parseJsonBody(request)) as RemoteLoginActionRequest;
+        return jsonResponse(await handleRemoteLoginAction(env, body));
+      } catch (error) {
+        return errorResponse(error);
+      }
     }
 
     if (url.pathname.startsWith("/api/")) {

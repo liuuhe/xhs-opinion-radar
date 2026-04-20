@@ -1,6 +1,6 @@
 import { launch } from "@cloudflare/playwright";
-import type { RemoteLoginStreamEvent } from "../src/shared/types";
-import { type Env } from "./env";
+import type { RemoteLoginActionRequest, RemoteLoginActionResponse, RemoteLoginStreamEvent } from "../src/shared/types";
+import { ApiError, type Env } from "./env";
 import { clearSessionDiagnostic } from "./session";
 
 const LOGIN_LOCK_KEY = "xhs:remote_login:lock";
@@ -17,8 +17,18 @@ type BrowserLike = any;
 type PageLike = any;
 
 interface LoginLock {
+  loginId: string;
   createdAt: string;
   expiresAt: string;
+  actionKey: string;
+  actionCursor: number;
+}
+
+interface LoginActionCommand {
+  id: number;
+  action: "request_code" | "submit_code";
+  code?: string;
+  createdAt: string;
 }
 
 export function streamRemoteLogin(env: Env, url: URL): Response {
@@ -43,18 +53,20 @@ export function streamRemoteLogin(env: Env, url: URL): Response {
         return;
       }
 
-      const lock = await acquireLoginLock(env);
-      if (!lock.acquired) {
+      const lockResult = await acquireLoginLock(env);
+      if (!lockResult.acquired) {
         send({
           stage: "login_error",
-          message: `已有远程登录任务进行中，请稍后再试。锁将在 ${formatTime(lock.expiresAt)} 过期。`,
+          message: `已有远程登录任务进行中，请稍后再试。锁将在 ${formatTime(lockResult.expiresAt)} 过期。`,
           progress: 100,
           code: "login_in_progress",
-          expiresAt: lock.expiresAt
+          loginId: lockResult.loginId,
+          expiresAt: lockResult.expiresAt
         });
         controller.close();
         return;
       }
+      const lock = lockResult.lock;
 
       let browser: BrowserLike | null = null;
       try {
@@ -63,6 +75,7 @@ export function streamRemoteLogin(env: Env, url: URL): Response {
           stage: "login_started",
           message: "正在启动 Cloudflare 远程登录浏览器。",
           progress: 5,
+          loginId: lock.loginId,
           expiresAt
         });
 
@@ -70,7 +83,7 @@ export function streamRemoteLogin(env: Env, url: URL): Response {
           keep_alive: LOGIN_TIMEOUT_MS
         });
         const page = await prepareLoginPage(browser);
-        await streamLoginLoop({ env, browser, page, send, expiresAt });
+        await streamLoginLoop({ env, browser, page, send, lock, expiresAt });
       } catch (error) {
         send({
           stage: "login_error",
@@ -96,10 +109,41 @@ export function streamRemoteLogin(env: Env, url: URL): Response {
   });
 }
 
+export async function handleRemoteLoginAction(env: Env, request: RemoteLoginActionRequest): Promise<RemoteLoginActionResponse> {
+  if (!isAuthorized(env, String(request.token || ""))) {
+    throw new ApiError(401, "管理员口令无效");
+  }
+
+  const lock = await readLoginLock(env);
+  if (!lock || lock.loginId !== request.loginId || Date.parse(lock.expiresAt) <= Date.now()) {
+    throw new ApiError(409, "远程登录会话不存在或已过期", "请重新点击“刷新远程登录态”。");
+  }
+
+  const action = request.action === "submit_code" ? "submit_code" : "request_code";
+  const code = String(request.code || "").trim();
+  if (action === "submit_code" && !/^\d{4,8}$/.test(code)) {
+    throw new ApiError(400, "验证码格式不正确", "请输入短信里的 4-8 位数字验证码。");
+  }
+
+  const command: LoginActionCommand = {
+    id: Date.now(),
+    action,
+    code: action === "submit_code" ? code : undefined,
+    createdAt: new Date().toISOString()
+  };
+  await env.PUBLIC_OPINION_KV.put(lock.actionKey, JSON.stringify(command), { expirationTtl: 90 });
+  return {
+    ok: true,
+    loginId: lock.loginId,
+    message: action === "submit_code" ? "验证码已发送到远程浏览器。" : "已请求远程浏览器点击获取验证码。"
+  };
+}
+
 async function streamLoginLoop(input: {
   env: Env;
   browser: BrowserLike;
   page: PageLike;
+  lock: LoginLock;
   expiresAt: string;
   send: (event: RemoteLoginStreamEvent) => void;
 }): Promise<void> {
@@ -107,6 +151,18 @@ async function streamLoginLoop(input: {
   let screenshotCount = 0;
 
   while (Date.now() < deadline) {
+    const actionMessage = await applyPendingLoginAction(input.env, input.page, input.lock);
+    if (actionMessage) {
+      input.send({
+        stage: "login_action",
+        message: actionMessage,
+        progress: 55,
+        loginId: input.lock.loginId,
+        screenshotDataUrl: await capturePageScreenshot(input.page),
+        expiresAt: input.expiresAt
+      });
+    }
+
     const authState = await detectAuthState(input.page);
     if (authState.authenticated) {
       const savedAt = new Date().toISOString();
@@ -116,6 +172,7 @@ async function streamLoginLoop(input: {
         stage: "login_authenticated",
         message: "远程登录成功，登录态已保存到 Cloudflare KV。",
         progress: 100,
+        loginId: input.lock.loginId,
         savedAt
       });
       return;
@@ -126,6 +183,7 @@ async function streamLoginLoop(input: {
         stage: "login_screenshot",
         message: authState.message,
         progress: Math.min(90, 15 + screenshotCount * 7),
+        loginId: input.lock.loginId,
         screenshotDataUrl: await capturePageScreenshot(input.page),
         qrImageDataUrl: await captureQrImage(input.page),
         expiresAt: input.expiresAt
@@ -139,7 +197,8 @@ async function streamLoginLoop(input: {
   input.send({
     stage: "login_expired",
     message: "远程登录会话已超时，请重新启动登录流程。",
-    progress: 100
+    progress: 100,
+    loginId: input.lock.loginId
   });
 }
 
@@ -169,6 +228,90 @@ async function clickLoginEntry(page: PageLike): Promise<void> {
     loginNode?.click();
   }).catch(() => undefined);
   await page.waitForTimeout(800).catch(() => undefined);
+}
+
+async function applyPendingLoginAction(env: Env, page: PageLike, lock: LoginLock): Promise<string | null> {
+  const value = await env.PUBLIC_OPINION_KV.get(lock.actionKey);
+  if (!value) {
+    return null;
+  }
+
+  let command: LoginActionCommand;
+  try {
+    command = JSON.parse(value) as LoginActionCommand;
+  } catch {
+    await env.PUBLIC_OPINION_KV.delete(lock.actionKey).catch(() => undefined);
+    return null;
+  }
+
+  if (command.id <= lock.actionCursor) {
+    return null;
+  }
+
+  lock.actionCursor = command.id;
+  await updateLoginLock(env, lock);
+
+  if (command.action === "request_code") {
+    await clickGetCode(page);
+    return "已在远程浏览器点击“获取验证码”。";
+  }
+
+  if (command.action === "submit_code" && command.code) {
+    await fillAndSubmitCode(page, command.code);
+    return "已在远程浏览器填写并提交验证码。";
+  }
+
+  return null;
+}
+
+async function clickGetCode(page: PageLike): Promise<void> {
+  await switchToPhoneLogin(page);
+  await page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll("button, div, span, a"));
+    const node = candidates.find((item) => (item.textContent || "").trim().includes("获取验证码")) as HTMLElement | undefined;
+    node?.click();
+  });
+  await page.waitForTimeout(900).catch(() => undefined);
+}
+
+async function fillAndSubmitCode(page: PageLike, code: string): Promise<void> {
+  await switchToPhoneLogin(page);
+  await page.evaluate((verificationCode: string) => {
+    const inputs = Array.from(document.querySelectorAll("input")) as HTMLInputElement[];
+    const visibleInputs = inputs.filter((input) => {
+      const rect = input.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !input.disabled && input.type !== "hidden";
+    });
+    const codeInput =
+      visibleInputs.find((input) => /验证码|code/i.test(input.placeholder || input.name || input.id)) ||
+      visibleInputs.at(-1);
+    if (codeInput) {
+      codeInput.focus();
+      codeInput.value = verificationCode;
+      codeInput.dispatchEvent(new Event("input", { bubbles: true }));
+      codeInput.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const candidates = Array.from(document.querySelectorAll("button, div, span"));
+    const submitNode = candidates.find((node) => {
+      const text = (node.textContent || "").trim();
+      return text === "登录" || text.includes("登录");
+    }) as HTMLElement | undefined;
+    submitNode?.click();
+  }, code);
+  await page.waitForTimeout(1200).catch(() => undefined);
+}
+
+async function switchToPhoneLogin(page: PageLike): Promise<void> {
+  await page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll("button, div, span, a"));
+    const phoneNode = candidates.find((node) => {
+      const text = (node.textContent || "").trim();
+      return text.includes("手机号登录") || text.includes("验证码登录");
+    }) as HTMLElement | undefined;
+    phoneNode?.click();
+  }).catch(() => undefined);
+  await page.waitForTimeout(600).catch(() => undefined);
 }
 
 async function detectAuthState(page: PageLike): Promise<{ authenticated: boolean; message: string }> {
@@ -256,22 +399,30 @@ async function saveStorageState(env: Env, browser: BrowserLike, savedAt: string)
   });
 }
 
-async function acquireLoginLock(env: Env): Promise<{ acquired: true; expiresAt: string } | { acquired: false; expiresAt: string }> {
+async function acquireLoginLock(env: Env): Promise<
+  | { acquired: true; lock: LoginLock; loginId: string; expiresAt: string }
+  | { acquired: false; loginId: string; expiresAt: string }
+> {
   const existing = await readLoginLock(env);
   if (existing && Date.parse(existing.expiresAt) > Date.now()) {
-    return { acquired: false, expiresAt: existing.expiresAt };
+    return { acquired: false, loginId: existing.loginId, expiresAt: existing.expiresAt };
   }
 
   const expiresAt = new Date(Date.now() + LOGIN_TIMEOUT_MS + 30_000).toISOString();
+  const loginId = crypto.randomUUID();
+  const lock: LoginLock = {
+    loginId,
+    createdAt: new Date().toISOString(),
+    expiresAt,
+    actionKey: loginActionKey(loginId),
+    actionCursor: 0
+  };
   await env.PUBLIC_OPINION_KV.put(
     LOGIN_LOCK_KEY,
-    JSON.stringify({
-      createdAt: new Date().toISOString(),
-      expiresAt
-    } satisfies LoginLock),
+    JSON.stringify(lock),
     { expirationTtl: Math.ceil((LOGIN_TIMEOUT_MS + 30_000) / 1000) }
   );
-  return { acquired: true, expiresAt };
+  return { acquired: true, lock, loginId, expiresAt };
 }
 
 async function readLoginLock(env: Env): Promise<LoginLock | null> {
@@ -284,7 +435,16 @@ async function readLoginLock(env: Env): Promise<LoginLock | null> {
 }
 
 async function releaseLoginLock(env: Env): Promise<void> {
+  const lock = await readLoginLock(env);
+  if (lock) {
+    await env.PUBLIC_OPINION_KV.delete(lock.actionKey).catch(() => undefined);
+  }
   await env.PUBLIC_OPINION_KV.delete(LOGIN_LOCK_KEY).catch(() => undefined);
+}
+
+async function updateLoginLock(env: Env, lock: LoginLock): Promise<void> {
+  const ttl = Math.max(30, Math.ceil((Date.parse(lock.expiresAt) - Date.now()) / 1000));
+  await env.PUBLIC_OPINION_KV.put(LOGIN_LOCK_KEY, JSON.stringify(lock), { expirationTtl: ttl }).catch(() => undefined);
 }
 
 function isAuthorized(env: Env, token: string): boolean {
@@ -322,4 +482,8 @@ function errorMessage(error: unknown): string {
 
 function formatTime(value: string): string {
   return new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function loginActionKey(loginId: string): string {
+  return `xhs:remote_login:action:${loginId}`;
 }

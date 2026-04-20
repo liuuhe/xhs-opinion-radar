@@ -40,6 +40,7 @@ import type {
   AnalysisStreamEvent,
   ApiErrorResponse,
   LabeledSample,
+  RemoteLoginActionResponse,
   RemoteLoginStage,
   RemoteLoginStreamEvent,
   SessionStatusResponse,
@@ -111,6 +112,9 @@ function App() {
   const [remoteLoginProgress, setRemoteLoginProgress] = useState(0);
   const [remoteLoginScreenshot, setRemoteLoginScreenshot] = useState("");
   const [remoteLoginQr, setRemoteLoginQr] = useState("");
+  const [remoteLoginId, setRemoteLoginId] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [isLoginActionLoading, setIsLoginActionLoading] = useState(false);
   const [isRemoteLoginLoading, setIsRemoteLoginLoading] = useState(false);
   const analyzeEventsRef = useRef<EventSource | null>(null);
   const loginEventsRef = useRef<EventSource | null>(null);
@@ -225,6 +229,8 @@ function App() {
     setRemoteLoginMessage("正在连接远程登录流...");
     setRemoteLoginScreenshot("");
     setRemoteLoginQr("");
+    setRemoteLoginId("");
+    setVerificationCode("");
     loginEventsRef.current?.close();
 
     const params = new URLSearchParams({ token: adminToken });
@@ -235,6 +241,9 @@ function App() {
     const handleLoginEvent = (payload: RemoteLoginStreamEvent) => {
       setRemoteLoginMessage(payload.message);
       setRemoteLoginProgress(payload.progress);
+      if (payload.loginId) {
+        setRemoteLoginId(payload.loginId);
+      }
       if (payload.screenshotDataUrl) {
         setRemoteLoginScreenshot(payload.screenshotDataUrl);
       }
@@ -269,6 +278,36 @@ function App() {
       }
       stream.close();
     };
+  }
+
+  async function sendRemoteLoginAction(action: "request_code" | "submit_code") {
+    if (!remoteLoginId) {
+      setRemoteLoginMessage("远程登录会话尚未就绪，请先点击“刷新远程登录态”。");
+      return;
+    }
+    setIsLoginActionLoading(true);
+    try {
+      const response = await fetch("/api/login/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: adminToken,
+          loginId: remoteLoginId,
+          action,
+          code: verificationCode
+        })
+      });
+      const payload = (await response.json()) as RemoteLoginActionResponse | ApiErrorResponse;
+      if (!response.ok) {
+        const errorPayload = payload as ApiErrorResponse;
+        throw new Error([errorPayload.error, errorPayload.details].filter(Boolean).join("："));
+      }
+      setRemoteLoginMessage((payload as RemoteLoginActionResponse).message);
+    } catch (requestError) {
+      setRemoteLoginMessage(requestError instanceof Error ? requestError.message : "验证码操作失败");
+    } finally {
+      setIsLoginActionLoading(false);
+    }
   }
 
   function exportReport(format: "json" | "csv" | "markdown") {
@@ -324,7 +363,13 @@ function App() {
           remoteLoginProgress={remoteLoginProgress}
           remoteLoginScreenshot={remoteLoginScreenshot}
           remoteLoginQr={remoteLoginQr}
+          remoteLoginId={remoteLoginId}
+          verificationCode={verificationCode}
+          setVerificationCode={setVerificationCode}
+          isLoginActionLoading={isLoginActionLoading}
           onStartRemoteLogin={startRemoteLogin}
+          onRequestCode={() => void sendRemoteLoginAction("request_code")}
+          onSubmitCode={() => void sendRemoteLoginAction("submit_code")}
         />
       </section>
 
@@ -405,7 +450,13 @@ function AnalyzePanel(props: {
   remoteLoginProgress: number;
   remoteLoginScreenshot: string;
   remoteLoginQr: string;
+  remoteLoginId: string;
+  verificationCode: string;
+  setVerificationCode: (value: string) => void;
+  isLoginActionLoading: boolean;
   onStartRemoteLogin: () => void;
+  onRequestCode: () => void;
+  onSubmitCode: () => void;
 }) {
   return (
     <Card className="bg-card/90 backdrop-blur">
@@ -430,7 +481,13 @@ function AnalyzePanel(props: {
             remoteLoginProgress={props.remoteLoginProgress}
             remoteLoginScreenshot={props.remoteLoginScreenshot}
             remoteLoginQr={props.remoteLoginQr}
+            remoteLoginId={props.remoteLoginId}
+            verificationCode={props.verificationCode}
+            setVerificationCode={props.setVerificationCode}
+            isLoginActionLoading={props.isLoginActionLoading}
             onStartRemoteLogin={props.onStartRemoteLogin}
+            onRequestCode={props.onRequestCode}
+            onSubmitCode={props.onSubmitCode}
           />
 
           <div className="grid gap-2">
@@ -517,7 +574,13 @@ function SessionPanel({
   remoteLoginProgress,
   remoteLoginScreenshot,
   remoteLoginQr,
-  onStartRemoteLogin
+  remoteLoginId,
+  verificationCode,
+  setVerificationCode,
+  isLoginActionLoading,
+  onStartRemoteLogin,
+  onRequestCode,
+  onSubmitCode
 }: {
   isLoading: boolean;
   status: SessionStatusResponse | null;
@@ -530,7 +593,13 @@ function SessionPanel({
   remoteLoginProgress: number;
   remoteLoginScreenshot: string;
   remoteLoginQr: string;
+  remoteLoginId: string;
+  verificationCode: string;
+  setVerificationCode: (value: string) => void;
+  isLoginActionLoading: boolean;
   onStartRemoteLogin: () => void;
+  onRequestCode: () => void;
+  onSubmitCode: () => void;
 }) {
   const hasSession = Boolean(status?.hasSession);
   const hasLoginError = status?.lastErrorCode === "login_required";
@@ -640,6 +709,40 @@ function SessionPanel({
             {isRemoteLoginLoading ? <Loader2 className="animate-spin" /> : <KeyRound />}
             {isRemoteLoginLoading ? "等待扫码" : "刷新远程登录态"}
           </Button>
+          <div className="grid gap-2 rounded-md border bg-muted/20 p-3">
+            <p className="text-xs font-medium">短信验证码</p>
+            <p className="text-muted-foreground text-xs leading-5">
+              如果远程页面要求手机验证码，先在截图中确认手机号页面已出现，再点击获取验证码；收到短信后填入验证码并提交。
+            </p>
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <Input
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={verificationCode}
+                onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="输入短信验证码"
+                disabled={!remoteLoginId || isLoginActionLoading}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onRequestCode}
+                disabled={!remoteLoginId || isLoginActionLoading}
+              >
+                {isLoginActionLoading ? <Loader2 className="animate-spin" /> : null}
+                获取验证码
+              </Button>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onSubmitCode}
+              disabled={!remoteLoginId || !/^\d{4,8}$/.test(verificationCode) || isLoginActionLoading}
+            >
+              {isLoginActionLoading ? <Loader2 className="animate-spin" /> : null}
+              提交验证码到远程浏览器
+            </Button>
+          </div>
         </div>
         <div className="rounded-md border bg-background/70 p-3">
           <p className="text-xs font-medium">本地上传兜底</p>

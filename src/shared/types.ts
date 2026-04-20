@@ -139,6 +139,7 @@ export interface SessionStatusResponse {
 export type RemoteLoginStage =
   | "login_started"
   | "login_screenshot"
+  | "login_action"
   | "login_authenticated"
   | "login_expired"
   | "login_error";
@@ -147,10 +148,24 @@ export interface RemoteLoginStreamEvent {
   stage: RemoteLoginStage;
   message: string;
   progress: number;
+  loginId?: string;
   screenshotDataUrl?: string;
   qrImageDataUrl?: string;
   expiresAt?: string;
   savedAt?: string;
   error?: string;
   code?: AnalysisErrorCode | "unauthorized" | "login_in_progress";
+}
+
+export interface RemoteLoginActionRequest {
+  token: string;
+  loginId: string;
+  action: "request_code" | "submit_code";
+  code?: string;
+}
+
+export interface RemoteLoginActionResponse {
+  ok: boolean;
+  message: string;
+  loginId: string;
 }

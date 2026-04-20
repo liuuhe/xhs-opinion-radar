@@ -84,7 +84,7 @@ wrangler secret put LOGIN_ADMIN_TOKEN
 
 4. 登录小红书：
 
-推荐使用网页右侧“远程扫码刷新”。输入 `LOGIN_ADMIN_TOKEN` 后启动 Cloudflare 远程浏览器，用小红书 App 扫码确认，成功后 Worker 会把远程浏览器登录态保存到 KV。这样生成的登录态和后续抓取使用同一个 Cloudflare 环境。
+推荐使用网页右侧“远程扫码刷新”。输入 `LOGIN_ADMIN_TOKEN` 后启动 Cloudflare 远程浏览器，用小红书 App 扫码确认，成功后 Worker 会把远程浏览器登录态保存到 KV。这样生成的登录态和后续抓取使用同一个 Cloudflare 环境。如果小红书要求短信验证码，可在网页的“短信验证码”区域点击获取验证码、填写手机收到的验证码并提交到远程浏览器。
 
 本地上传仍作为兜底。如果本地已经有 `sessions/xiaohongshu_storage_state.json`，只需要运行上传命令。这个命令只读本地文件并写入 Cloudflare KV，不会打开浏览器窗口：
 
