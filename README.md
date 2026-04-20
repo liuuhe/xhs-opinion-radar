@@ -51,6 +51,71 @@ python -m app export_dataset
 python -m app train_bert
 ```
 
+## Cloudflare Web App
+
+新增的网页成品部署在 Cloudflare Workers + Static Assets 上：
+
+- 前端：React + Vite，输入关键词并展示情绪比例、评论样本和帖子来源。
+- 后端：Cloudflare Worker 的 `/api/analyze`，使用 Browser Run 抓取小红书搜索结果。
+- 登录态：网页只检查 KV 状态；登录态通过本地 `sessions/xiaohongshu_storage_state.json` 上传到 KV，避免网页登录额外占用 Browser Run。
+- 情绪判断：默认使用 OpenAI 兼容 LLM；BERT 模式需要额外配置外部推理服务 `BERT_INFERENCE_URL`。
+- UI：使用 shadcn/ui + Tailwind，包含阶段进度、情绪图表、诊断面板和 JSON/CSV/Markdown 导出。
+
+1. 安装前端和 Worker 依赖：
+
+```bash
+npm install
+```
+
+2. 创建 KV namespace，并把输出的 `id` 填入 `wrangler.jsonc` 的 `PUBLIC_OPINION_KV`：
+
+```bash
+npm run cf:kv:create
+```
+
+3. 配置 Cloudflare secrets：
+
+```bash
+wrangler secret put OPENAI_API_KEY
+```
+
+如果使用兼容 OpenAI 的服务，可在 `wrangler.jsonc` 修改 `OPENAI_BASE_URL` 和 `OPENAI_MODEL`。
+
+4. 上传小红书登录态：
+
+如果本地已经有 `sessions/xiaohongshu_storage_state.json`，只需要运行上传命令。这个命令只读本地文件并写入 Cloudflare KV，不会打开浏览器窗口：
+
+```bash
+npm run cf:upload-session
+```
+
+只有本地登录态文件不存在或已经失效时，才需要手动重新登录一次。这个命令会打开 Playwright 浏览器窗口用于扫码：
+
+```bash
+python -m app login
+npm run cf:upload-session
+```
+
+网页中的“KV 已就绪”只代表登录态文件存在。若诊断显示 `login_required`，说明 Cloudflare 远程浏览器已经被小红书要求重新登录，需要重新执行上面的登录和上传流程。
+
+5. 本地开发、构建和部署：
+
+```bash
+npm run dev
+npm run build
+npm run deploy
+```
+
+如需本地稳定演示完整报告，可在本地 `.dev.vars` 中启用 fixture：
+
+```bash
+LOCAL_FIXTURE_ENABLED=true
+```
+
+fixture 仅用于本地开发和答辩彩排；线上配置默认关闭，真实抓取失败时会展示诊断信息而不是自动返回演示数据。
+
+本地开发时如果要通过 Cloudflare Browser Run 观察真实浏览器，可按 Cloudflare 文档使用 `X_BROWSER_HEADFUL=true npm run dev`。部署前需要确认账号已启用 Browser Run，并且 `wrangler.jsonc` 中的 Browser binding 保持为 `BROWSER`。
+
 ## Output Layout
 
 - `data/raw/raw_posts.jsonl`
@@ -62,6 +127,7 @@ python -m app train_bert
 - `data/exports/test.csv`
 - `data/exports/validation_report.json`
 - `data/models/bert_finetune/`
+- Cloudflare 网页构建产物：`dist/`
 
 ## Notes
 
@@ -69,3 +135,6 @@ python -m app train_bert
 - 代码默认只做教学与研究用途，执行前自行确认平台规则与数据使用边界。
 - 小红书页面结构会变化，`app/crawler.py` 中保留了多套 DOM / 全局状态提取兜底逻辑，必要时需要按实际页面微调。
 - 如果 `login` 报 `ERR_CONNECTION_CLOSED`，先运行 `python -m app doctor_browser`，再根据输出调整 `config.yaml` 中的 `browser.launch_args`、`login_candidates` 或本地网络环境。
+- Cloudflare Worker 端不会直接运行本地 PyTorch/BERT 模型；BERT 推理需要外部 HTTP 服务，网页默认使用 LLM 模式。
+- `/api/analyze/stream` 会返回阶段事件和诊断信息，前端优先使用该接口展示分析进度。
+- 如果分析报 `Cloudflare Browser Run 当前被限流` 或 `code: 429`，说明 Cloudflare 暂时拒绝创建新的远程浏览器。系统会在 KV 中记录短暂冷却期，等待页面提示的时间后再重试，避免连续点击拉长限流。

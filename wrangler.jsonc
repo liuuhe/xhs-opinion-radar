@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "public-opinion-cloudflare",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-04-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "upload_source_maps": true,
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "PUBLIC_OPINION_KV",
+      "id": "7baed1f4696941f595206ac4d29b5425"
+    }
+  ],
+  "vars": {
+    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+    "OPENAI_MODEL": "gpt-4o-mini",
+    "XHS_STORAGE_STATE_KEY": "xhs:storage_state",
+    "ANALYSIS_CACHE_TTL_SECONDS": "1800",
+    "BROWSER_RATE_LIMIT_COOLDOWN_SECONDS": "180",
+    "LOCAL_FIXTURE_ENABLED": "false"
+  }
+}
