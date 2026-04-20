@@ -1,5 +1,5 @@
-import type { AnalyzeRequest, RemoteLoginActionRequest } from "../src/shared/types";
-import { analyzeKeyword, streamAnalyzeKeyword } from "./analyze";
+import type { AnalyzeRequest, ClientCapturedAnalyzeRequest, RemoteLoginActionRequest } from "../src/shared/types";
+import { analyzeClientCapture, analyzeKeyword, streamAnalyzeKeyword } from "./analyze";
 import { ApiError, type Env } from "./env";
 import { errorResponse, jsonResponse, optionsResponse } from "./http";
 import { handleRemoteLoginAction, streamRemoteLogin } from "./login";
@@ -34,6 +34,15 @@ export default {
       try {
         const body = (await parseJsonBody(request)) as AnalyzeRequest;
         return jsonResponse(await analyzeKeyword(env, body));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+
+    if (url.pathname === "/api/analyze/captured" && request.method === "POST") {
+      try {
+        const body = (await parseJsonBody(request)) as ClientCapturedAnalyzeRequest;
+        return jsonResponse(await analyzeClientCapture(env, body));
       } catch (error) {
         return errorResponse(error);
       }

@@ -84,7 +84,7 @@ wrangler secret put LOGIN_ADMIN_TOKEN
 
 4. 登录小红书：
 
-推荐使用网页右侧“远程扫码刷新”。输入 `LOGIN_ADMIN_TOKEN` 后启动 Cloudflare 远程浏览器，用小红书 App 扫码确认，成功后 Worker 会把远程浏览器登录态保存到 KV。这样生成的登录态和后续抓取使用同一个 Cloudflare 环境。如果小红书要求短信验证码，可在网页的“短信验证码”区域点击获取验证码、填写手机收到的验证码并提交到远程浏览器。
+推荐使用网页右侧“远程扫码刷新”。输入 `LOGIN_ADMIN_TOKEN` 后启动 Cloudflare 远程浏览器，用小红书 App 扫码确认，成功后 Worker 会把远程浏览器登录态保存到 KV。这样生成的登录态和后续抓取使用同一个 Cloudflare 环境。如果小红书要求短信验证码，验证码通常会在扫码后自动发送，可在网页的“短信验证码”区域填写手机收到的验证码并提交到远程浏览器。
 
 本地上传仍作为兜底。如果本地已经有 `sessions/xiaohongshu_storage_state.json`，只需要运行上传命令。这个命令只读本地文件并写入 Cloudflare KV，不会打开浏览器窗口：
 
@@ -142,3 +142,34 @@ fixture 仅用于本地开发和答辩彩排；线上配置默认关闭，真实
 - Cloudflare Worker 端不会直接运行本地 PyTorch/BERT 模型；BERT 推理需要外部 HTTP 服务，网页默认使用 LLM 模式。
 - `/api/analyze/stream` 会返回阶段事件和诊断信息，前端优先使用该接口展示分析进度。
 - 如果分析报 `Cloudflare Browser Run 当前被限流` 或 `code: 429`，说明 Cloudflare 暂时拒绝创建新的远程浏览器。系统会在 KV 中记录短暂冷却期，等待页面提示的时间后再重试，避免连续点击拉长限流。
+
+## Chrome Extension Capture
+
+`browser-extension/` 提供一个 Manifest V3 扩展，用于把采集动作放回用户自己的已登录浏览器：
+
+- 老师或演示者只需要 Chrome / Edge 等 Chromium 浏览器，不需要安装 Python、Node 或 Playwright。
+- 用户先正常登录小红书，再打开搜索页或帖子详情页。
+- 扩展会从当前标签页的 DOM 和页面网络 JSON 中提取帖子与评论。
+- 扩展调用 Worker 的 `/api/analyze/captured`，Worker 只做情绪标注和报告生成，不再创建 Cloudflare Browser Run。
+
+安装方式：
+
+1. 打开 `chrome://extensions`。
+2. 开启 Developer mode。
+3. 点击 Load unpacked。
+4. 选择本仓库的 `browser-extension/` 目录。
+
+使用方式：
+
+1. 打开并登录 `https://www.xiaohongshu.com`。
+2. 搜索关键词，或打开某个帖子详情页。
+3. 滚动页面，让帖子或评论加载出来。
+4. 点击扩展图标，先点“采集当前页”，再点“发送分析”。
+
+扩展默认使用线上 Worker：
+
+```text
+https://public-opinion-cloudflare.liuuhe.workers.dev
+```
+
+如果是本地 Worker，可以在扩展弹窗里把 Worker 地址改成对应的本地地址。

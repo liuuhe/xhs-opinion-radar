@@ -51,7 +51,7 @@ export function buildAnalysisResponse(input: {
   labeledSamples: LabeledSample[];
   warnings: string[];
   diagnostics?: AnalysisDiagnostics;
-  sourceMode?: "live" | "fixture" | "cache";
+  sourceMode?: "live" | "fixture" | "cache" | "client";
 }): AnalysisResponse {
   const totals: AnalysisTotals = {
     posts: input.posts.length,
@@ -87,7 +87,7 @@ export function buildSummary(input: {
   distribution: Record<SentimentLabel, SentimentBucket>;
   totals: AnalysisTotals;
   diagnostics?: AnalysisDiagnostics;
-  sourceMode: "live" | "fixture" | "cache";
+  sourceMode: "live" | "fixture" | "cache" | "client";
 }): string {
   if (input.totals.validSamples === 0) {
     const advice = input.diagnostics?.advice || "建议检查登录态、关键词结果和页面结构后重试。";
@@ -100,7 +100,12 @@ export function buildSummary(input: {
     neutral: "中性",
     negative: "负向"
   }[dominant.label];
-  const sourceNote = input.sourceMode === "fixture" ? "当前为本地演示数据，" : "";
+  const sourceNote =
+    input.sourceMode === "fixture"
+      ? "当前为本地演示数据，"
+      : input.sourceMode === "client"
+        ? "当前样本来自浏览器扩展采集，"
+        : "";
   return `${sourceNote}“${input.keyword}”共分析 ${input.totals.validSamples} 条评论，${labelName}情绪占比最高（${Math.round(
     dominant.ratio * 100
   )}%）。样本来自 ${input.totals.posts} 篇帖子，结论应结合抓取样本量和平台个性化推荐偏差解读。`;

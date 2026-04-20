@@ -2,7 +2,10 @@ import { ApiError } from "./env";
 
 const JSON_HEADERS = {
   "Content-Type": "application/json; charset=utf-8",
-  "Cache-Control": "no-store"
+  "Cache-Control": "no-store",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type,Authorization"
 };
 
 export function jsonResponse(payload: unknown, init: ResponseInit = {}): Response {

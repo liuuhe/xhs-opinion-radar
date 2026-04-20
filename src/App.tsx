@@ -867,7 +867,15 @@ function ReportDashboard({
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
             <div className="flex flex-wrap gap-2">
-              <Badge>{result.sourceMode === "fixture" ? "本地演示数据" : result.sourceMode === "cache" ? "缓存结果" : "实时抓取"}</Badge>
+              <Badge>
+                {result.sourceMode === "fixture"
+                  ? "本地演示数据"
+                  : result.sourceMode === "cache"
+                    ? "缓存结果"
+                    : result.sourceMode === "client"
+                      ? "扩展采集"
+                      : "实时抓取"}
+              </Badge>
               <Badge variant="outline">{result.engine.toUpperCase()}</Badge>
               <Badge variant="outline">{new Date(result.capturedAt).toLocaleString("zh-CN")}</Badge>
             </div>

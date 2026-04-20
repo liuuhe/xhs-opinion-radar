@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Xiaohongshu Opinion Capture",
+  "description": "Capture visible Xiaohongshu posts/comments and send them to the public opinion Worker.",
+  "version": "0.1.0",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Opinion Capture"
+  },
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": [
+    "https://www.xiaohongshu.com/*",
+    "https://*.xiaohongshu.com/*",
+    "https://*.workers.dev/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-bridge.js"],
+      "matches": ["https://www.xiaohongshu.com/*"]
+    }
+  ]
+}

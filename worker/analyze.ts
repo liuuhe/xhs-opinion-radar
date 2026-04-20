@@ -4,7 +4,10 @@ import type {
   AnalysisErrorCode,
   AnalysisResponse,
   AnalysisStreamEvent,
-  AnalyzeRequest
+  AnalyzeRequest,
+  CapturedComment,
+  CapturedPost,
+  ClientCapturedAnalyzeRequest
 } from "../src/shared/types";
 import { ApiError, type Env } from "./env";
 import { buildFixtureAnalysis } from "./fixtures";
@@ -230,6 +233,69 @@ export async function analyzeKeyword(
   return response;
 }
 
+export async function analyzeClientCapture(
+  env: Env,
+  request: ClientCapturedAnalyzeRequest
+): Promise<AnalysisResponse> {
+  const keyword = normalizeKeyword(request.keyword);
+  const engine = normalizeEngine(request.engine);
+  const maxPosts = clampNumber(request.maxPosts, DEFAULT_MAX_POSTS, 1, 30);
+  const commentsPerPost = clampNumber(request.commentsPerPost, DEFAULT_COMMENTS_PER_POST, 0, 80);
+  const warnings: string[] = [];
+
+  if (engine === "bert" && !env.BERT_INFERENCE_URL) {
+    throw new ApiError(
+      400,
+      "BERT 推理服务未配置",
+      "请配置 BERT_INFERENCE_URL，或在扩展里选择 LLM 模式。",
+      "unknown"
+    );
+  }
+
+  const posts = await sanitizeClientPosts(request.posts, {
+    keyword,
+    maxPosts,
+    commentsPerPost,
+    warnings
+  });
+
+  const diagnostics: AnalysisDiagnostics = {
+    pageUrl: trimString(request.pageUrl, 500),
+    extractedLinkCount: posts.length,
+    commentCountsByPost: Object.fromEntries(posts.map((post) => [post.postId, post.comments.length])),
+    advice:
+      posts.length === 0
+        ? "扩展未采集到帖子。请先打开小红书搜索页或帖子详情页，滚动加载后再采集。"
+        : "本次数据由浏览器扩展在已登录的小红书页面采集，不使用 Cloudflare Browser Run。"
+  };
+
+  if (posts.length === 0) {
+    warnings.push("扩展没有采集到可分析帖子。请确认当前标签页是小红书搜索页或帖子详情页。");
+  }
+  const commentCount = posts.reduce((sum, post) => sum + post.comments.length, 0);
+  if (commentCount === 0) {
+    warnings.push("扩展没有采集到评论样本。请打开帖子详情页并滚动评论区后重新采集。");
+  }
+
+  const labeledSamples = await labelComments({
+    env,
+    engine,
+    posts,
+    warnings
+  });
+
+  return buildAnalysisResponse({
+    keyword,
+    engine,
+    capturedAt: new Date().toISOString(),
+    posts,
+    labeledSamples,
+    warnings,
+    diagnostics,
+    sourceMode: "client"
+  });
+}
+
 export function streamAnalyzeKeyword(env: Env, url: URL): Response {
   const encoder = new TextEncoder();
   const request = analyzeRequestFromUrl(url);
@@ -273,6 +339,17 @@ export function streamAnalyzeKeyword(env: Env, url: URL): Response {
 
 function normalizeEngine(value: unknown): AnalysisEngine {
   return value === "bert" ? "bert" : "llm";
+}
+
+function normalizeKeyword(value: unknown): string {
+  const keyword = String(value || "").trim();
+  if (!keyword) {
+    throw new ApiError(400, "请输入关键词");
+  }
+  if (keyword.length > 60) {
+    throw new ApiError(400, "关键词过长", "请将关键词控制在 60 个字符以内。");
+  }
+  return keyword;
 }
 
 function analyzeRequestFromUrl(url: URL): AnalyzeRequest {
@@ -384,4 +461,106 @@ async function buildCacheKey(input: {
 }): Promise<string> {
   const digest = await hashIdentifier(JSON.stringify(input), "analysis-cache-v1");
   return `analysis:v1:${digest}`;
+}
+
+async function sanitizeClientPosts(
+  rawPosts: unknown,
+  options: {
+    keyword: string;
+    maxPosts: number;
+    commentsPerPost: number;
+    warnings: string[];
+  }
+): Promise<CapturedPost[]> {
+  if (!Array.isArray(rawPosts)) {
+    return [];
+  }
+
+  const posts: CapturedPost[] = [];
+  const seenPosts = new Set<string>();
+
+  for (const rawPost of rawPosts) {
+    if (!rawPost || typeof rawPost !== "object" || posts.length >= options.maxPosts) {
+      continue;
+    }
+    const item = rawPost as Partial<CapturedPost>;
+    const url = trimString(item.url, 500);
+    const rawPostId = trimString(item.postId, 120) || extractPostId(url) || `client-post-${posts.length + 1}`;
+    const postId = await hashIdentifier(rawPostId, "client-post");
+    if (seenPosts.has(postId)) {
+      continue;
+    }
+    seenPosts.add(postId);
+
+    const comments = await sanitizeClientComments(item.comments, {
+      postId,
+      postUrl: url,
+      limit: options.commentsPerPost
+    });
+
+    posts.push({
+      postId,
+      url,
+      title: trimString(item.title, 160) || `${options.keyword} 相关帖子`,
+      description: trimString(item.description, 500),
+      authorHash: trimString(item.authorHash, 80) || "client-author",
+      tags: Array.isArray(item.tags) ? item.tags.map((tag) => trimString(tag, 40)).filter(Boolean).slice(0, 12) : [],
+      comments
+    });
+  }
+
+  if (rawPosts.length > options.maxPosts) {
+    options.warnings.push(`扩展采集到 ${rawPosts.length} 篇帖子，本次按设置截取前 ${options.maxPosts} 篇。`);
+  }
+
+  return posts;
+}
+
+async function sanitizeClientComments(
+  rawComments: unknown,
+  input: {
+    postId: string;
+    postUrl: string;
+    limit: number;
+  }
+): Promise<CapturedComment[]> {
+  if (!Array.isArray(rawComments) || input.limit <= 0) {
+    return [];
+  }
+
+  const comments: CapturedComment[] = [];
+  const seenTexts = new Set<string>();
+  for (const rawComment of rawComments) {
+    if (!rawComment || typeof rawComment !== "object" || comments.length >= input.limit) {
+      continue;
+    }
+    const item = rawComment as Partial<CapturedComment>;
+    const text = trimString(item.text, 300);
+    if (!text || seenTexts.has(text)) {
+      continue;
+    }
+    seenTexts.add(text);
+    const rawCommentId = trimString(item.commentId, 120) || `${input.postId}:${text}`;
+    const commentId = await hashIdentifier(rawCommentId, "client-comment");
+    comments.push({
+      sampleId: `client-${commentId}`,
+      commentId,
+      postId: input.postId,
+      postUrl: input.postUrl,
+      text,
+      userHash: trimString(item.userHash, 80) || "client-user",
+      commentLevel: clampNumber(item.commentLevel, 1, 1, 5),
+      captureSource: item.captureSource === "network" ? "network" : "dom"
+    });
+  }
+  return comments;
+}
+
+function trimString(value: unknown, maxLength: number): string {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function extractPostId(url: string): string {
+  const match = url.match(/\/(?:explore|discovery\/item)\/([^/?#]+)/);
+  return match?.[1] || "";
 }

@@ -25,6 +25,11 @@ export interface AnalyzeRequest {
   useFixture?: boolean;
 }
 
+export interface ClientCapturedAnalyzeRequest extends AnalyzeRequest {
+  pageUrl?: string;
+  posts: CapturedPost[];
+}
+
 export interface CapturedPost {
   postId: string;
   url: string;
@@ -99,7 +104,7 @@ export interface AnalysisResponse {
   summary: string;
   diagnostics?: AnalysisDiagnostics;
   exports: AnalysisExportInfo;
-  sourceMode: "live" | "fixture" | "cache";
+  sourceMode: "live" | "fixture" | "cache" | "client";
 }
 
 export interface ApiErrorResponse {
