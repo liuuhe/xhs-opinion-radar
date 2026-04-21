@@ -1,17 +1,6 @@
 export type SentimentLabel = "positive" | "neutral" | "negative";
 export type AnalysisEngine = "llm" | "bert";
-export type AnalysisStage =
-  | "started"
-  | "searching"
-  | "posts_captured"
-  | "comments_captured"
-  | "labeling"
-  | "completed"
-  | "failed";
 export type AnalysisErrorCode =
-  | "missing_storage_state"
-  | "login_required"
-  | "browser_rate_limited"
   | "search_no_posts"
   | "comment_empty"
   | "llm_failed"
@@ -104,7 +93,7 @@ export interface AnalysisResponse {
   summary: string;
   diagnostics?: AnalysisDiagnostics;
   exports: AnalysisExportInfo;
-  sourceMode: "live" | "fixture" | "cache" | "client";
+  sourceMode: "fixture" | "client";
 }
 
 export interface ApiErrorResponse {
@@ -113,64 +102,4 @@ export interface ApiErrorResponse {
   code?: AnalysisErrorCode;
   diagnostics?: AnalysisDiagnostics;
   warnings?: string[];
-}
-
-export interface AnalysisStreamEvent {
-  stage: AnalysisStage;
-  message: string;
-  progress: number;
-  result?: AnalysisResponse;
-  error?: string;
-  code?: AnalysisErrorCode;
-  diagnostics?: AnalysisDiagnostics;
-}
-
-export interface SessionStatusResponse {
-  hasSession: boolean;
-  key: string;
-  checkedAt: string;
-  uploadedAt?: string;
-  lastCheckedAt?: string;
-  lastErrorCode?: AnalysisErrorCode;
-  lastAdvice?: string;
-  cookieCount?: number;
-  originCount?: number;
-  storageBytes?: number;
-  earliestCookieExpiry?: string;
-  latestCookieExpiry?: string;
-  message: string;
-}
-
-export type RemoteLoginStage =
-  | "login_started"
-  | "login_screenshot"
-  | "login_action"
-  | "login_authenticated"
-  | "login_expired"
-  | "login_error";
-
-export interface RemoteLoginStreamEvent {
-  stage: RemoteLoginStage;
-  message: string;
-  progress: number;
-  loginId?: string;
-  screenshotDataUrl?: string;
-  qrImageDataUrl?: string;
-  expiresAt?: string;
-  savedAt?: string;
-  error?: string;
-  code?: AnalysisErrorCode | "unauthorized" | "login_in_progress";
-}
-
-export interface RemoteLoginActionRequest {
-  token: string;
-  loginId: string;
-  action: "request_code" | "submit_code";
-  code?: string;
-}
-
-export interface RemoteLoginActionResponse {
-  ok: boolean;
-  message: string;
-  loginId: string;
 }

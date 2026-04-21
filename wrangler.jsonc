@@ -10,21 +10,9 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
-  "browser": {
-    "binding": "BROWSER"
-  },
-  "kv_namespaces": [
-    {
-      "binding": "PUBLIC_OPINION_KV",
-      "id": "7baed1f4696941f595206ac4d29b5425"
-    }
-  ],
   "vars": {
     "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
     "OPENAI_MODEL": "openai/gpt-4o-mini",
-    "XHS_STORAGE_STATE_KEY": "xhs:storage_state",
-    "ANALYSIS_CACHE_TTL_SECONDS": "1800",
-    "BROWSER_RATE_LIMIT_COOLDOWN_SECONDS": "180",
     "LOCAL_FIXTURE_ENABLED": "false"
   }
 }

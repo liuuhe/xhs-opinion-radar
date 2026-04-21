@@ -51,7 +51,7 @@ export function buildAnalysisResponse(input: {
   labeledSamples: LabeledSample[];
   warnings: string[];
   diagnostics?: AnalysisDiagnostics;
-  sourceMode?: "live" | "fixture" | "cache" | "client";
+  sourceMode?: "fixture" | "client";
 }): AnalysisResponse {
   const totals: AnalysisTotals = {
     posts: input.posts.length,
@@ -74,11 +74,11 @@ export function buildAnalysisResponse(input: {
       distribution: buildDistribution(input.labeledSamples),
       totals,
       diagnostics: input.diagnostics,
-      sourceMode: input.sourceMode || "live"
+      sourceMode: input.sourceMode || "client"
     }),
     diagnostics: input.diagnostics,
     exports: buildExportInfo(input.keyword),
-    sourceMode: input.sourceMode || "live"
+    sourceMode: input.sourceMode || "client"
   };
 }
 
@@ -87,7 +87,7 @@ export function buildSummary(input: {
   distribution: Record<SentimentLabel, SentimentBucket>;
   totals: AnalysisTotals;
   diagnostics?: AnalysisDiagnostics;
-  sourceMode: "live" | "fixture" | "cache" | "client";
+  sourceMode: "fixture" | "client";
 }): string {
   if (input.totals.validSamples === 0) {
     const advice = input.diagnostics?.advice || "建议检查登录态、关键词结果和页面结构后重试。";
@@ -103,9 +103,7 @@ export function buildSummary(input: {
   const sourceNote =
     input.sourceMode === "fixture"
       ? "当前为本地演示数据，"
-      : input.sourceMode === "client"
-        ? "当前样本来自浏览器扩展采集，"
-        : "";
+      : "当前样本来自本地 Playwright 采集，";
   return `${sourceNote}“${input.keyword}”共分析 ${input.totals.validSamples} 条评论，${labelName}情绪占比最高（${Math.round(
     dominant.ratio * 100
   )}%）。样本来自 ${input.totals.posts} 篇帖子，结论应结合抓取样本量和平台个性化推荐偏差解读。`;

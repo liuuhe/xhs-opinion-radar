@@ -1,22 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  AlertCircle,
-  BarChart3,
-  Camera,
-  CheckCircle2,
-  Database,
-  Download,
-  FileJson,
-  FileText,
-  KeyRound,
-  Loader2,
-  MessageCircle,
-  Radar,
-  RefreshCcw,
-  Search,
-  ShieldAlert,
-  Sparkles
-} from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertCircle, BarChart3, Database, Download, FileJson, FileText, MessageCircle, Radar, Upload } from "lucide-react";
 import { Bar, BarChart, Cell, Pie, PieChart, Tooltip, XAxis, YAxis } from "recharts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -28,30 +11,13 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type {
-  AnalysisDiagnostics,
-  AnalysisEngine,
-  AnalysisResponse,
-  AnalysisStage,
-  AnalysisStreamEvent,
-  ApiErrorResponse,
-  LabeledSample,
-  RemoteLoginActionResponse,
-  RemoteLoginStage,
-  RemoteLoginStreamEvent,
-  SessionStatusResponse,
-  SentimentBucket,
-  SentimentLabel
-} from "./shared/types";
+import type { AnalysisEngine, AnalysisResponse, ClientCapturedAnalyzeRequest, LabeledSample, SentimentBucket, SentimentLabel } from "./shared/types";
 
-const LABEL_META: Record<
-  SentimentLabel,
-  { name: string; description: string; color: string; badgeClass: string }
-> = {
+const DEFAULT_WORKER_URL = "https://public-opinion-cloudflare.liuuhe.workers.dev";
+
+const LABEL_META: Record<SentimentLabel, { name: string; description: string; color: string; badgeClass: string }> = {
   positive: {
     name: "正向",
     description: "支持、满意、鼓励",
@@ -72,246 +38,79 @@ const LABEL_META: Record<
   }
 };
 
-const STAGE_META: Record<AnalysisStage, { label: string; progress: number }> = {
-  started: { label: "准备任务", progress: 5 },
-  searching: { label: "搜索帖子", progress: 18 },
-  posts_captured: { label: "提取帖子", progress: 46 },
-  comments_captured: { label: "抓取评论", progress: 62 },
-  labeling: { label: "情绪分析", progress: 78 },
-  completed: { label: "生成报告", progress: 100 },
-  failed: { label: "任务失败", progress: 100 }
-};
-
-const REMOTE_LOGIN_STAGES: RemoteLoginStage[] = [
-  "login_started",
-  "login_screenshot",
-  "login_action",
-  "login_authenticated",
-  "login_expired",
-  "login_error"
-];
-
 function App() {
   const [keyword, setKeyword] = useState("咖啡");
   const [engine, setEngine] = useState<AnalysisEngine>("llm");
   const [maxPosts, setMaxPosts] = useState(10);
-  const [commentsPerPost, setCommentsPerPost] = useState(20);
-  const [useFixture, setUseFixture] = useState(false);
-  const [fixtureEnabled, setFixtureEnabled] = useState(false);
+  const [commentsPerPost, setCommentsPerPost] = useState(30);
+  const [workerUrl, setWorkerUrl] = useState(DEFAULT_WORKER_URL);
+  const [jsonText, setJsonText] = useState("");
   const [result, setResult] = useState<AnalysisResponse | null>(null);
-  const [error, setError] = useState<string>("");
-  const [diagnostics, setDiagnostics] = useState<AnalysisDiagnostics | undefined>();
+  const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [currentMessage, setCurrentMessage] = useState("等待开始分析");
-  const [events, setEvents] = useState<AnalysisStreamEvent[]>([]);
-  const [sessionStatus, setSessionStatus] = useState<SessionStatusResponse | null>(null);
-  const [isSessionLoading, setIsSessionLoading] = useState(false);
-  const [remoteLoginConfigured, setRemoteLoginConfigured] = useState(false);
-  const [adminToken, setAdminToken] = useState("");
-  const [remoteLoginMessage, setRemoteLoginMessage] = useState("输入管理员口令后，可在网页内刷新 Cloudflare 远程登录态。");
-  const [remoteLoginProgress, setRemoteLoginProgress] = useState(0);
-  const [remoteLoginScreenshot, setRemoteLoginScreenshot] = useState("");
-  const [remoteLoginQr, setRemoteLoginQr] = useState("");
-  const [remoteLoginId, setRemoteLoginId] = useState("");
-  const [verificationCode, setVerificationCode] = useState("");
-  const [isLoginActionLoading, setIsLoginActionLoading] = useState(false);
-  const [isRemoteLoginLoading, setIsRemoteLoginLoading] = useState(false);
-  const analyzeEventsRef = useRef<EventSource | null>(null);
-  const loginEventsRef = useRef<EventSource | null>(null);
 
-  useEffect(() => {
-    void fetch("/api/health")
-      .then((response) => response.json())
-      .then((payload: { fixtureEnabled?: boolean; remoteLoginConfigured?: boolean }) => {
-        setFixtureEnabled(Boolean(payload.fixtureEnabled));
-        setRemoteLoginConfigured(Boolean(payload.remoteLoginConfigured));
-      })
-      .catch(() => {
-        setFixtureEnabled(false);
-        setRemoteLoginConfigured(false);
-      });
-    void refreshSessionStatus();
+  const collectCommand = `python -m app collect --keyword "${keyword}" --posts ${maxPosts} --comments ${commentsPerPost} --worker-url ${workerUrl} --engine ${engine}`;
 
-    return () => {
-      analyzeEventsRef.current?.close();
-      loginEventsRef.current?.close();
-    };
-  }, []);
-
-  async function refreshSessionStatus() {
-    setIsSessionLoading(true);
-    try {
-      const response = await fetch("/api/session/status");
-      const payload = (await response.json()) as SessionStatusResponse | ApiErrorResponse;
-      if (!response.ok) {
-        const errorPayload = payload as ApiErrorResponse;
-        throw new Error([errorPayload.error, errorPayload.details].filter(Boolean).join("："));
-      }
-      setSessionStatus(payload as SessionStatusResponse);
-    } catch (requestError) {
-      setSessionStatus({
-        hasSession: false,
-        key: "xhs:storage_state",
-        checkedAt: new Date().toISOString(),
-        message: requestError instanceof Error ? requestError.message : "无法检查 KV 登录态"
-      });
-    } finally {
-      setIsSessionLoading(false);
+  async function handleFileUpload(file: File | undefined) {
+    if (!file) {
+      return;
     }
+    setJsonText(await file.text());
+    setError("");
   }
 
-  function handleAnalyze(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function analyzeJson() {
     setError("");
-    setResult(null);
-    setDiagnostics(undefined);
-    setEvents([]);
-    setProgress(1);
-    setCurrentMessage("正在连接分析流...");
     setIsLoading(true);
-    analyzeEventsRef.current?.close();
-
-    const params = new URLSearchParams({
-      keyword,
-      engine,
-      maxPosts: String(maxPosts),
-      commentsPerPost: String(commentsPerPost),
-      useFixture: useFixture ? "1" : "0"
-    });
-    const stream = new EventSource(`/api/analyze/stream?${params.toString()}`);
-    analyzeEventsRef.current = stream;
-    let completed = false;
-
-    const handleStreamEvent = (payload: AnalysisStreamEvent) => {
-      setEvents((items) => [...items, payload]);
-      setProgress(payload.progress);
-      setCurrentMessage(payload.message);
-      if (payload.diagnostics) {
-        setDiagnostics(payload.diagnostics);
-      }
-      if (payload.result) {
-        setResult(payload.result);
-        setDiagnostics(payload.result.diagnostics);
-      }
-      if (payload.stage === "completed") {
-        completed = true;
-        setIsLoading(false);
-        stream.close();
-      }
-      if (payload.stage === "failed") {
-        completed = true;
-        setIsLoading(false);
-        setError(formatStreamFailure(payload));
-        setDiagnostics(payload.diagnostics);
-        stream.close();
-      }
-    };
-
-    (Object.keys(STAGE_META) as AnalysisStage[]).forEach((stage) => {
-      stream.addEventListener(stage, (messageEvent) => {
-        handleStreamEvent(JSON.parse(messageEvent.data) as AnalysisStreamEvent);
-      });
-    });
-
-    stream.onerror = () => {
-      setIsLoading(false);
-      if (!completed) {
-        setError("分析流连接中断。为避免重复启动 Cloudflare Browser Run，本次不会自动重发；请稍后再试。");
-        stream.close();
-      }
-    };
-  }
-
-  function startRemoteLogin() {
-    setError("");
-    setIsRemoteLoginLoading(true);
-    setRemoteLoginProgress(1);
-    setRemoteLoginMessage("正在连接远程登录流...");
-    setRemoteLoginScreenshot("");
-    setRemoteLoginQr("");
-    setRemoteLoginId("");
-    setVerificationCode("");
-    loginEventsRef.current?.close();
-
-    const params = new URLSearchParams({ token: adminToken });
-    const stream = new EventSource(`/api/login/stream?${params.toString()}`);
-    loginEventsRef.current = stream;
-    let completed = false;
-
-    const handleLoginEvent = (payload: RemoteLoginStreamEvent) => {
-      setRemoteLoginMessage(payload.message);
-      setRemoteLoginProgress(payload.progress);
-      if (payload.loginId) {
-        setRemoteLoginId(payload.loginId);
-      }
-      if (payload.screenshotDataUrl) {
-        setRemoteLoginScreenshot(payload.screenshotDataUrl);
-      }
-      if (payload.qrImageDataUrl) {
-        setRemoteLoginQr(payload.qrImageDataUrl);
-      }
-      if (payload.stage === "login_authenticated") {
-        completed = true;
-        setIsRemoteLoginLoading(false);
-        setRemoteLoginMessage(`${payload.message} 保存时间：${payload.savedAt ? new Date(payload.savedAt).toLocaleString("zh-CN") : "刚刚"}`);
-        void refreshSessionStatus();
-        stream.close();
-      }
-      if (payload.stage === "login_expired" || payload.stage === "login_error") {
-        completed = true;
-        setIsRemoteLoginLoading(false);
-        setRemoteLoginMessage([payload.message, payload.error].filter(Boolean).join("："));
-        stream.close();
-      }
-    };
-
-    REMOTE_LOGIN_STAGES.forEach((stage) => {
-      stream.addEventListener(stage, (messageEvent) => {
-        handleLoginEvent(JSON.parse(messageEvent.data) as RemoteLoginStreamEvent);
-      });
-    });
-
-    stream.onerror = () => {
-      setIsRemoteLoginLoading(false);
-      if (!completed) {
-        setRemoteLoginMessage("远程登录连接已断开；请等待当前 Browser Run 会话释放后再试。");
-      }
-      stream.close();
-    };
-  }
-
-  async function submitRemoteVerificationCode() {
-    if (!remoteLoginId) {
-      setRemoteLoginMessage("远程登录会话尚未就绪，请先点击“刷新远程登录态”。");
-      return;
-    }
-    if (!/^\d{4,8}$/.test(verificationCode)) {
-      setRemoteLoginMessage("请输入 4-8 位短信验证码。");
-      return;
-    }
-    setIsLoginActionLoading(true);
     try {
-      const response = await fetch("/api/login/action", {
+      const payload = JSON.parse(jsonText || "{}") as Partial<ClientCapturedAnalyzeRequest & AnalysisResponse>;
+      if (isAnalysisResponse(payload)) {
+        setResult(payload);
+        return;
+      }
+      const requestPayload: ClientCapturedAnalyzeRequest = {
+        keyword: String(payload.keyword || keyword),
+        engine,
+        maxPosts,
+        commentsPerPost,
+        pageUrl: String(payload.pageUrl || ""),
+        posts: Array.isArray(payload.posts) ? payload.posts : []
+      };
+      const response = await fetch(`${apiBaseUrl(workerUrl)}/api/analyze/captured`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: adminToken,
-          loginId: remoteLoginId,
-          action: "submit_code",
-          code: verificationCode
-        })
+        body: JSON.stringify(requestPayload)
       });
-      const payload = (await response.json()) as RemoteLoginActionResponse | ApiErrorResponse;
+      const analysis = await response.json();
       if (!response.ok) {
-        const errorPayload = payload as ApiErrorResponse;
-        throw new Error([errorPayload.error, errorPayload.details].filter(Boolean).join("："));
+        throw new Error([analysis.error, analysis.details].filter(Boolean).join("："));
       }
-      setRemoteLoginMessage((payload as RemoteLoginActionResponse).message);
+      setResult(analysis as AnalysisResponse);
     } catch (requestError) {
-      setRemoteLoginMessage(requestError instanceof Error ? requestError.message : "验证码操作失败");
+      setError(requestError instanceof Error ? requestError.message : "JSON 解析或分析失败");
     } finally {
-      setIsLoginActionLoading(false);
+      setIsLoading(false);
+    }
+  }
+
+  async function loadFixture() {
+    setError("");
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${apiBaseUrl(workerUrl)}/api/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword, engine, maxPosts, commentsPerPost, useFixture: true })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error([payload.error, payload.details].filter(Boolean).join("："));
+      }
+      setResult(payload as AnalysisResponse);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "演示数据加载失败");
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -343,60 +142,80 @@ function App() {
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-5 md:px-8 md:py-7">
       <HeroCard />
 
-      <AnalyzePanel
-        keyword={keyword}
-        setKeyword={setKeyword}
-        engine={engine}
-        setEngine={setEngine}
-        maxPosts={maxPosts}
-        setMaxPosts={setMaxPosts}
-        commentsPerPost={commentsPerPost}
-        setCommentsPerPost={setCommentsPerPost}
-        useFixture={useFixture}
-        setUseFixture={setUseFixture}
-        fixtureEnabled={fixtureEnabled}
-        isLoading={isLoading}
-        onSubmit={handleAnalyze}
-        sessionStatus={sessionStatus}
-        isSessionLoading={isSessionLoading}
-        onRefreshSession={() => void refreshSessionStatus()}
-        remoteLoginConfigured={remoteLoginConfigured}
-        adminToken={adminToken}
-        setAdminToken={setAdminToken}
-        isRemoteLoginLoading={isRemoteLoginLoading}
-        remoteLoginMessage={remoteLoginMessage}
-        remoteLoginProgress={remoteLoginProgress}
-        remoteLoginScreenshot={remoteLoginScreenshot}
-        remoteLoginQr={remoteLoginQr}
-        remoteLoginId={remoteLoginId}
-        verificationCode={verificationCode}
-        setVerificationCode={setVerificationCode}
-        isLoginActionLoading={isLoginActionLoading}
-        onStartRemoteLogin={startRemoteLogin}
-        onSubmitCode={() => void submitRemoteVerificationCode()}
-      />
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+        <Card className="bg-card/90 backdrop-blur">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Radar className="size-5 text-primary" />
+              本地 Playwright 采集
+            </CardTitle>
+            <CardDescription>登录、搜索、打开帖子和采集评论都在本机浏览器完成；Cloudflare 只负责情绪分析和报告展示。</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextInput label="关键词" value={keyword} onChange={setKeyword} />
+              <TextInput label="Worker 地址" value={workerUrl} onChange={setWorkerUrl} />
+              <NumberInput label="帖子数" value={maxPosts} onChange={setMaxPosts} min={1} max={30} />
+              <NumberInput label="每帖评论" value={commentsPerPost} onChange={setCommentsPerPost} min={0} max={80} />
+            </div>
+            <div className="grid gap-2">
+              <Label>标注引擎</Label>
+              <Tabs value={engine} onValueChange={(value) => setEngine(value as AnalysisEngine)}>
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="llm">LLM</TabsTrigger>
+                  <TabsTrigger value="bert">BERT 外部推理</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            <div className="rounded-xl border bg-muted/30 p-4">
+              <p className="text-sm font-medium">推荐流程</p>
+              <ol className="text-muted-foreground mt-2 grid gap-1 text-sm leading-6">
+                <li>1. 首次运行：<code>python -m app login</code></li>
+                <li>2. 采集并分析：运行下面命令</li>
+                <li>3. 把生成的 <code>data/reports/*-analysis.json</code> 上传到右侧查看报告</li>
+              </ol>
+              <pre className="mt-3 overflow-x-auto rounded-lg bg-background p-3 text-xs">{collectCommand}</pre>
+            </div>
+            <Button variant="outline" type="button" onClick={() => void loadFixture()} disabled={isLoading}>
+              加载本地 fixture 演示报告
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Upload className="size-5 text-primary" />
+              上传采集结果
+            </CardTitle>
+            <CardDescription>支持本地采集器生成的 capture JSON，或 Worker 返回的 analysis JSON。</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <Input type="file" accept="application/json,.json" onChange={(event) => void handleFileUpload(event.target.files?.[0])} />
+            <textarea
+              className="border-input bg-background min-h-64 rounded-md border p-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              value={jsonText}
+              onChange={(event) => setJsonText(event.target.value)}
+              placeholder="也可以直接粘贴 data/captures 或 data/reports 中的 JSON..."
+            />
+            <Button type="button" onClick={() => void analyzeJson()} disabled={isLoading || !jsonText.trim()}>
+              {isLoading ? "处理中..." : "生成/查看报告"}
+            </Button>
+          </CardContent>
+        </Card>
+      </section>
 
       {error && (
         <Alert variant="destructive">
           <AlertCircle />
-          <AlertTitle>分析失败</AlertTitle>
+          <AlertTitle>处理失败</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
-      {(isLoading || events.length > 0) && (
-        <ProgressPanel progress={progress} message={currentMessage} events={events} />
-      )}
-
-      {!result && !isLoading && events.length === 0 && <EmptyReportPreview />}
-
-      {result && (
-        <ReportDashboard
-          result={result}
-          diagnostics={diagnostics}
-          onExport={exportReport}
-        />
-      )}
+      {!result && !isLoading && <EmptyReportPreview />}
+      {isLoading && <Progress value={70} />}
+      {result && <ReportDashboard result={result} onExport={exportReport} />}
     </main>
   );
 }
@@ -404,422 +223,43 @@ function App() {
 function HeroCard() {
   return (
     <Card className="glass-panel overflow-hidden border-0">
-      <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,1fr)_420px] md:items-center md:p-6">
+      <CardContent className="grid gap-4 p-6 md:grid-cols-[minmax(0,1fr)_360px] md:items-center">
         <div>
           <Badge variant="outline" className="mb-4 w-fit border-primary/30 bg-background/60 text-primary">
-            <Radar className="mr-1 size-3.5" />
             Xiaohongshu Opinion Radar
           </Badge>
           <CardTitle className="text-2xl leading-tight tracking-[-0.04em] md:text-3xl">
-            关键词舆情分析，从抓取到情绪报告一屏完成。
+            本机稳定采集，云端生成情绪报告。
           </CardTitle>
           <CardDescription className="mt-3 max-w-3xl text-sm leading-6">
-            输入关键词后抓取小红书搜索结果，汇总评论情绪、样本证据和失败诊断。线上优先真实抓取，fixture 仅用于本地答辩彩排。
+            Playwright 在本机复用真实登录态完成搜索和评论采集；Cloudflare Worker 接收结构化 JSON，调用 LLM/BERT 推理并生成可导出的舆情报告。
           </CardDescription>
         </div>
-        <div className="grid gap-3">
-          <div className="grid gap-2 sm:grid-cols-3">
-            <MetricPill label="平台" value="小红书" />
-            <MetricPill label="部署" value="Cloudflare" />
-            <MetricPill label="模式" value="真实抓取优先" />
-          </div>
-          <div className="rounded-xl border bg-background/55 p-3 text-xs leading-5 text-muted-foreground">
-            流程：远程登录态、搜索帖子、抓取评论、情绪标注、导出报告。
-          </div>
+        <div className="grid gap-2 sm:grid-cols-3 md:grid-cols-1">
+          <MetricPill label="采集" value="本地 Playwright" />
+          <MetricPill label="分析" value="Cloudflare Worker" />
+          <MetricPill label="展示" value="网页报告" />
         </div>
-      </div>
-    </Card>
-  );
-}
-
-function AnalyzePanel(props: {
-  keyword: string;
-  setKeyword: (value: string) => void;
-  engine: AnalysisEngine;
-  setEngine: (value: AnalysisEngine) => void;
-  maxPosts: number;
-  setMaxPosts: (value: number) => void;
-  commentsPerPost: number;
-  setCommentsPerPost: (value: number) => void;
-  useFixture: boolean;
-  setUseFixture: (value: boolean) => void;
-  fixtureEnabled: boolean;
-  isLoading: boolean;
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
-  sessionStatus: SessionStatusResponse | null;
-  isSessionLoading: boolean;
-  onRefreshSession: () => void;
-  remoteLoginConfigured: boolean;
-  adminToken: string;
-  setAdminToken: (value: string) => void;
-  isRemoteLoginLoading: boolean;
-  remoteLoginMessage: string;
-  remoteLoginProgress: number;
-  remoteLoginScreenshot: string;
-  remoteLoginQr: string;
-  remoteLoginId: string;
-  verificationCode: string;
-  setVerificationCode: (value: string) => void;
-  isLoginActionLoading: boolean;
-  onStartRemoteLogin: () => void;
-  onSubmitCode: () => void;
-}) {
-  return (
-    <Card className="bg-card/90 backdrop-blur">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Search className="size-5 text-primary" />
-          分析控制台
-        </CardTitle>
-        <CardDescription>输入关键词并选择分析规模。默认使用线上真实抓取。</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form className="grid gap-5" onSubmit={props.onSubmit}>
-          <SessionPanel
-            isLoading={props.isSessionLoading}
-            status={props.sessionStatus}
-            onRefresh={props.onRefreshSession}
-            remoteLoginConfigured={props.remoteLoginConfigured}
-            adminToken={props.adminToken}
-            setAdminToken={props.setAdminToken}
-            isRemoteLoginLoading={props.isRemoteLoginLoading}
-            remoteLoginMessage={props.remoteLoginMessage}
-            remoteLoginProgress={props.remoteLoginProgress}
-            remoteLoginScreenshot={props.remoteLoginScreenshot}
-            remoteLoginQr={props.remoteLoginQr}
-            remoteLoginId={props.remoteLoginId}
-            verificationCode={props.verificationCode}
-            setVerificationCode={props.setVerificationCode}
-            isLoginActionLoading={props.isLoginActionLoading}
-            onStartRemoteLogin={props.onStartRemoteLogin}
-            onSubmitCode={props.onSubmitCode}
-          />
-
-          <div className="grid gap-2">
-            <Label htmlFor="keyword">关键词</Label>
-            <Input
-              id="keyword"
-              value={props.keyword}
-              onChange={(event) => props.setKeyword(event.target.value)}
-              placeholder="例如：咖啡、露营、防晒"
-              maxLength={60}
-              className="h-11"
-            />
-          </div>
-
-          <Tabs value={props.engine} onValueChange={(value) => props.setEngine(value as AnalysisEngine)}>
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="llm">LLM 实时标注</TabsTrigger>
-              <TabsTrigger value="bert">BERT 外部推理</TabsTrigger>
-            </TabsList>
-          </Tabs>
-
-          <ScaleSlider
-            label={`帖子数 ${props.maxPosts}`}
-            min={1}
-            max={30}
-            value={props.maxPosts}
-            onChange={props.setMaxPosts}
-          />
-          <ScaleSlider
-            label={`每帖评论 ${props.commentsPerPost}`}
-            min={0}
-            max={50}
-            value={props.commentsPerPost}
-            onChange={props.setCommentsPerPost}
-          />
-
-          {props.fixtureEnabled && (
-            <div className="rounded-lg border border-dashed bg-muted/40 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">本地 fixture 演示模式</p>
-                  <p className="text-muted-foreground text-xs">仅本地启用，线上不会自动使用演示数据。</p>
-                </div>
-                <Button
-                  type="button"
-                  variant={props.useFixture ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => props.setUseFixture(!props.useFixture)}
-                >
-                  {props.useFixture ? "已启用" : "启用"}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <Button className="h-11" disabled={props.isLoading || !props.keyword.trim()}>
-            {props.isLoading ? (
-              <>
-                <Loader2 className="animate-spin" />
-                分析中
-              </>
-            ) : (
-              <>
-                <Sparkles />
-                开始分析
-              </>
-            )}
-          </Button>
-        </form>
       </CardContent>
     </Card>
   );
 }
 
-function SessionPanel({
-  isLoading,
-  status,
-  onRefresh,
-  remoteLoginConfigured,
-  adminToken,
-  setAdminToken,
-  isRemoteLoginLoading,
-  remoteLoginMessage,
-  remoteLoginProgress,
-  remoteLoginScreenshot,
-  remoteLoginQr,
-  remoteLoginId,
-  verificationCode,
-  setVerificationCode,
-  isLoginActionLoading,
-  onStartRemoteLogin,
-  onSubmitCode
-}: {
-  isLoading: boolean;
-  status: SessionStatusResponse | null;
-  onRefresh: () => void;
-  remoteLoginConfigured: boolean;
-  adminToken: string;
-  setAdminToken: (value: string) => void;
-  isRemoteLoginLoading: boolean;
-  remoteLoginMessage: string;
-  remoteLoginProgress: number;
-  remoteLoginScreenshot: string;
-  remoteLoginQr: string;
-  remoteLoginId: string;
-  verificationCode: string;
-  setVerificationCode: (value: string) => void;
-  isLoginActionLoading: boolean;
-  onStartRemoteLogin: () => void;
-  onSubmitCode: () => void;
-}) {
-  const hasSession = Boolean(status?.hasSession);
-  const hasLoginError = status?.lastErrorCode === "login_required";
-  const statusText = isLoading ? "检查中" : hasLoginError ? "登录失效" : hasSession ? "KV 已就绪" : "待上传";
-
+function TextInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
-    <Card className="border-dashed bg-muted/30 py-4 shadow-none">
-      <CardContent className="grid gap-3 px-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium">登录态管理</p>
-            <p className="text-muted-foreground text-xs">优先使用 Cloudflare 远程扫码登录，确保登录态和抓取环境一致。</p>
-          </div>
-          <Badge variant={hasLoginError ? "destructive" : hasSession ? "default" : "outline"}>{statusText}</Badge>
-        </div>
-        <p className="text-muted-foreground text-xs leading-5">
-          {status?.message || "正在检查 KV 中是否已有 xhs:storage_state 登录态。"}
-        </p>
-        {hasLoginError && (
-          <Alert variant="destructive">
-            <AlertCircle />
-            <AlertTitle>登录态需要刷新</AlertTitle>
-            <AlertDescription>
-              {status?.lastAdvice || "Cloudflare 远程浏览器看到的是小红书登录页。请刷新远程登录态。"}
-            </AlertDescription>
-          </Alert>
-        )}
-        {status?.hasSession && (
-          <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-            <SessionMetric label="Cookie" value={String(status.cookieCount ?? 0)} />
-            <SessionMetric label="Origin" value={String(status.originCount ?? 0)} />
-            <SessionMetric label="大小" value={formatBytes(status.storageBytes || 0)} />
-            <SessionMetric
-              label="最晚过期"
-              value={status.latestCookieExpiry ? new Date(status.latestCookieExpiry).toLocaleDateString("zh-CN") : "未知"}
-            />
-          </div>
-        )}
-        <div className="grid gap-3 rounded-md border bg-background/70 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-medium">远程扫码刷新</p>
-              <p className="text-muted-foreground mt-1 text-xs leading-5">
-                启动 Cloudflare Browser Run 登录页，在这里扫码后直接保存远程浏览器登录态。
-              </p>
-            </div>
-            <Badge variant={remoteLoginConfigured ? "secondary" : "outline"}>
-              {remoteLoginConfigured ? "已配置口令" : "未配置口令"}
-            </Badge>
-          </div>
-          {!remoteLoginConfigured && (
-            <Alert>
-              <KeyRound />
-              <AlertTitle>需要配置管理员口令</AlertTitle>
-              <AlertDescription>运行 `wrangler secret put LOGIN_ADMIN_TOKEN` 后重新部署，再使用网页登录。</AlertDescription>
-            </Alert>
-          )}
-          <div className="grid gap-2">
-            <Label htmlFor="admin-token">管理员口令</Label>
-            <Input
-              id="admin-token"
-              type="password"
-              value={adminToken}
-              onChange={(event) => setAdminToken(event.target.value)}
-              placeholder="输入 LOGIN_ADMIN_TOKEN"
-              autoComplete="off"
-              disabled={!remoteLoginConfigured || isRemoteLoginLoading}
-            />
-          </div>
-          {(isRemoteLoginLoading || remoteLoginProgress > 0) && (
-            <div className="grid gap-2">
-              <Progress value={remoteLoginProgress} />
-              <p className="text-muted-foreground text-xs leading-5">{remoteLoginMessage}</p>
-            </div>
-          )}
-          {(remoteLoginScreenshot || remoteLoginQr) && (
-            <div className="grid gap-3">
-              {remoteLoginQr && (
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <p className="mb-2 text-xs font-medium">二维码区域</p>
-                  <img src={remoteLoginQr} alt="小红书远程登录二维码" className="mx-auto max-h-96 rounded-md object-contain" />
-                </div>
-              )}
-              {remoteLoginScreenshot && (
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-                    <Camera className="size-3.5" />
-                    远程浏览器页面，大图可右键在新标签页打开
-                  </div>
-                  <a href={remoteLoginScreenshot} target="_blank" rel="noreferrer" className="block">
-                    <img
-                      src={remoteLoginScreenshot}
-                      alt="Cloudflare 远程登录页截图"
-                      className="max-h-[72vh] w-full rounded-md border object-contain"
-                    />
-                  </a>
-                </div>
-              )}
-            </div>
-          )}
-          <Button
-            type="button"
-            size="sm"
-            onClick={onStartRemoteLogin}
-            disabled={!remoteLoginConfigured || !adminToken.trim() || isRemoteLoginLoading}
-          >
-            {isRemoteLoginLoading ? <Loader2 className="animate-spin" /> : <KeyRound />}
-            {isRemoteLoginLoading ? "等待扫码" : "刷新远程登录态"}
-          </Button>
-          <div className="grid gap-2 rounded-md border bg-muted/20 p-3">
-            <p className="text-xs font-medium">短信验证码</p>
-            <p className="text-muted-foreground text-xs leading-5">
-              验证码由小红书在扫码后自动发送。收到短信后填入验证码，系统会写入远程浏览器并尝试点击登录、确定或提交按钮。
-            </p>
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <Input
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={verificationCode}
-                onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))}
-                placeholder="输入短信验证码"
-                disabled={!remoteLoginId || isLoginActionLoading}
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={onSubmitCode}
-                disabled={!remoteLoginId || !/^\d{4,8}$/.test(verificationCode) || isLoginActionLoading}
-              >
-                {isLoginActionLoading ? <Loader2 className="animate-spin" /> : null}
-                填写并提交验证码
-              </Button>
-            </div>
-          </div>
-        </div>
-        <div className="rounded-md border bg-background/70 p-3">
-          <p className="text-xs font-medium">本地上传兜底</p>
-          <p className="text-muted-foreground mt-1 text-xs leading-5">
-            如果本地已经有 <code>sessions/xiaohongshu_storage_state.json</code>，只运行上传命令，不会打开浏览器窗口。
-          </p>
-          <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 text-xs">npm run cf:upload-session</pre>
-          <p className="text-muted-foreground mt-2 text-xs leading-5">
-            只有本地文件不存在或登录态过期时，才需要手动运行 <code>python -m app login</code> 重新扫码。
-          </p>
-        </div>
-        <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={isLoading}>
-          {isLoading ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
-          {isLoading ? "检查中" : "检查 KV 状态"}
-        </Button>
-      </CardContent>
-    </Card>
-  );
-}
-
-function SessionMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border bg-background/70 p-2">
-      <p className="text-muted-foreground">{label}</p>
-      <p className="mt-1 truncate font-medium">{value}</p>
-    </div>
-  );
-}
-
-function ScaleSlider({
-  label,
-  min,
-  max,
-  value,
-  onChange
-}: {
-  label: string;
-  min: number;
-  max: number;
-  value: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <div className="grid gap-3">
+    <div className="grid gap-2">
       <Label>{label}</Label>
-      <Slider min={min} max={max} value={[value]} onValueChange={(items) => onChange(items[0] || min)} />
+      <Input value={value} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
 
-function ProgressPanel({
-  progress,
-  message,
-  events
-}: {
-  progress: number;
-  message: string;
-  events: AnalysisStreamEvent[];
-}) {
+function NumberInput({ label, value, onChange, min, max }: { label: string; value: number; onChange: (value: number) => void; min: number; max: number }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Loader2 className="size-5 animate-spin text-primary" />
-          分析进度
-        </CardTitle>
-        <CardDescription>{message}</CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <Progress value={progress} />
-        <div className="grid gap-2 md:grid-cols-6">
-          {(Object.keys(STAGE_META) as AnalysisStage[]).filter((stage) => stage !== "failed").map((stage) => {
-            const active = events.some((event) => event.stage === stage);
-            return (
-              <div key={stage} className="rounded-lg border bg-muted/30 p-3">
-                <CheckCircle2 className={active ? "mb-2 size-4 text-primary" : "text-muted-foreground mb-2 size-4"} />
-                <p className="text-xs font-medium">{STAGE_META[stage].label}</p>
-              </div>
-            );
-          })}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="grid gap-2">
+      <Label>{label}</Label>
+      <Input type="number" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value) || min)} />
+    </div>
   );
 }
 
@@ -828,7 +268,7 @@ function EmptyReportPreview() {
     <Card>
       <CardHeader>
         <CardTitle>报告预览</CardTitle>
-        <CardDescription>开始分析后，这里会展示情绪分布、样本评论、帖子来源和诊断信息。</CardDescription>
+        <CardDescription>上传采集 JSON 或加载 fixture 后，这里会展示情绪分布、样本评论和帖子来源。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-3">
         <Skeleton className="h-32" />
@@ -839,15 +279,7 @@ function EmptyReportPreview() {
   );
 }
 
-function ReportDashboard({
-  result,
-  diagnostics,
-  onExport
-}: {
-  result: AnalysisResponse;
-  diagnostics?: AnalysisDiagnostics;
-  onExport: (format: "json" | "csv" | "markdown") => void;
-}) {
+function ReportDashboard({ result, onExport }: { result: AnalysisResponse; onExport: (format: "json" | "csv" | "markdown") => void }) {
   const chartData = useMemo(
     () =>
       (["positive", "neutral", "negative"] as SentimentLabel[]).map((label) => ({
@@ -867,21 +299,12 @@ function ReportDashboard({
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
             <div className="flex flex-wrap gap-2">
-              <Badge>
-                {result.sourceMode === "fixture"
-                  ? "本地演示数据"
-                  : result.sourceMode === "cache"
-                    ? "缓存结果"
-                    : result.sourceMode === "client"
-                      ? "扩展采集"
-                      : "实时抓取"}
-              </Badge>
+              <Badge>{result.sourceMode === "fixture" ? "fixture 演示" : "本地采集"}</Badge>
               <Badge variant="outline">{result.engine.toUpperCase()}</Badge>
               <Badge variant="outline">{new Date(result.capturedAt).toLocaleString("zh-CN")}</Badge>
             </div>
             <CardTitle className="text-3xl tracking-tight">
-              “{result.keyword}”主要情绪：
-              <span className="text-primary">{LABEL_META[dominant.label].name}</span>
+              “{result.keyword}”主要情绪：<span className="text-primary">{LABEL_META[dominant.label].name}</span>
             </CardTitle>
             <CardDescription className="max-w-4xl text-base leading-7">{result.summary}</CardDescription>
           </div>
@@ -897,7 +320,7 @@ function ReportDashboard({
 
         {result.warnings.length > 0 && (
           <Alert>
-            <ShieldAlert />
+            <AlertCircle />
             <AlertTitle>数据说明</AlertTitle>
             <AlertDescription>
               {result.warnings.map((warning) => (
@@ -908,14 +331,12 @@ function ReportDashboard({
         )}
 
         <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="overview">总览</TabsTrigger>
             <TabsTrigger value="samples">样本</TabsTrigger>
             <TabsTrigger value="posts">帖子</TabsTrigger>
-            <TabsTrigger value="diagnostics">诊断</TabsTrigger>
             <TabsTrigger value="exports">导出</TabsTrigger>
           </TabsList>
-
           <TabsContent value="overview" className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)]">
             <Card className="shadow-none">
               <CardHeader>
@@ -937,19 +358,12 @@ function ReportDashboard({
               </CardContent>
             </Card>
           </TabsContent>
-
           <TabsContent value="samples" className="mt-4">
             <SampleList samples={result.samples} />
           </TabsContent>
-
           <TabsContent value="posts" className="mt-4">
             <PostTable posts={result.posts} />
           </TabsContent>
-
-          <TabsContent value="diagnostics" className="mt-4">
-            <DiagnosticsPanel diagnostics={diagnostics || result.diagnostics} />
-          </TabsContent>
-
           <TabsContent value="exports" className="mt-4">
             <Card className="shadow-none">
               <CardHeader>
@@ -1053,13 +467,10 @@ function SampleList({ samples }: { samples: LabeledSample[] }) {
                   .filter((sample) => sample.label === label)
                   .map((sample) => (
                     <article key={sample.sampleId} className="rounded-lg border bg-background/70 p-3">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <Badge variant="outline" className={LABEL_META[sample.label].badgeClass}>
-                          {Math.round(sample.confidence * 100)}%
-                        </Badge>
-                        <span className="text-muted-foreground truncate text-xs">{sample.captureSource}</span>
-                      </div>
-                      <p className="text-sm leading-6">{sample.text}</p>
+                      <Badge variant="outline" className={LABEL_META[sample.label].badgeClass}>
+                        {Math.round(sample.confidence * 100)}%
+                      </Badge>
+                      <p className="mt-2 text-sm leading-6">{sample.text}</p>
                       <p className="text-muted-foreground mt-2 line-clamp-2 text-xs">
                         {sample.reasonShort} | {sample.postTitle}
                       </p>
@@ -1114,76 +525,13 @@ function PostTable({ posts }: { posts: AnalysisResponse["posts"] }) {
   );
 }
 
-function DiagnosticsPanel({ diagnostics }: { diagnostics?: AnalysisDiagnostics }) {
-  if (!diagnostics) {
-    return (
-      <Alert>
-        <ShieldAlert />
-        <AlertTitle>暂无诊断信息</AlertTitle>
-        <AlertDescription>任务顺利完成或当前阶段尚未产生诊断数据。</AlertDescription>
-      </Alert>
-    );
-  }
-
-  const rows = [
-    ["错误分类", diagnostics.errorCode || "无"],
-    ["页面标题", diagnostics.pageTitle || "无"],
-    ["页面 URL", diagnostics.pageUrl || "无"],
-    ["是否登录门槛", diagnostics.hasLoginGate ? "是" : "否"],
-    ["提取链接数", String(diagnostics.extractedLinkCount ?? "无")],
-    ["Network Payload 数", String(diagnostics.networkPayloadCount ?? "无")],
-    ["建议等待秒数", String(diagnostics.retryAfterSeconds ?? "无")],
-    ["冷却截止时间", diagnostics.cooldownUntil ? new Date(diagnostics.cooldownUntil).toLocaleString("zh-CN") : "无"],
-    ["建议", diagnostics.advice || "无"]
-  ];
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-      <Card className="shadow-none">
-        <CardHeader>
-          <CardTitle>抓取诊断</CardTitle>
-          <CardDescription>用于定位登录态、页面结构、Browser Run 或评论提取问题。</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableBody>
-              {rows.map(([label, value]) => (
-                <TableRow key={label}>
-                  <TableCell className="w-36 text-muted-foreground">{label}</TableCell>
-                  <TableCell className="whitespace-normal break-all">{value}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-      <Card className="shadow-none">
-        <CardHeader>
-          <CardTitle>页面摘要</CardTitle>
-          <CardDescription>抓取失败时保留的页面文本证据。</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ScrollArea className="h-64 rounded-md border bg-muted/30 p-4">
-            <pre className="whitespace-pre-wrap text-xs leading-5">{diagnostics.bodyExcerpt || "无页面摘要"}</pre>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function ExportButtons({ onExport }: { onExport: (format: "json" | "csv" | "markdown") => void }) {
   return (
     <div className="flex flex-wrap gap-2">
-      <UiTooltip>
-        <TooltipTrigger asChild>
-          <Button variant="outline" size="sm" onClick={() => onExport("json")}>
-            <FileJson />
-            JSON
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>完整结构化结果</TooltipContent>
-      </UiTooltip>
+      <Button variant="outline" size="sm" onClick={() => onExport("json")}>
+        <FileJson />
+        JSON
+      </Button>
       <Button variant="outline" size="sm" onClick={() => onExport("csv")}>
         <Download />
         CSV
@@ -1219,6 +567,10 @@ function MetricCard({ label, value, icon }: { label: string; value: number; icon
   );
 }
 
+function isAnalysisResponse(value: Partial<AnalysisResponse>): value is AnalysisResponse {
+  return Boolean(value && value.distribution && value.totals && value.labeledSamples);
+}
+
 function getDominantBucket(distribution: AnalysisResponse["distribution"]): SentimentBucket {
   return Object.values(distribution).sort((left, right) => right.count - left.count)[0];
 }
@@ -1231,24 +583,6 @@ function downloadText(content: string, filename: string, type: string) {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-  if (value < 1024 * 1024) {
-    return `${(value / 1024).toFixed(1)} KB`;
-  }
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatStreamFailure(payload: AnalysisStreamEvent): string {
-  if (payload.code === "browser_rate_limited") {
-    return [payload.message, payload.diagnostics?.advice].filter(Boolean).join(" ");
-  }
-  const detail = payload.error && payload.error !== payload.message ? payload.error : "";
-  return [payload.message, detail].filter(Boolean).join("：");
 }
 
 function buildCsv(result: AnalysisResponse): string {
@@ -1305,6 +639,10 @@ ${sampleRows || "暂无样本"}
 - 模式：${result.sourceMode}
 - 警告：${result.warnings.join("；") || "无"}
 `;
+}
+
+function apiBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
 }
 
 export default App;

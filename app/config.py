@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.utils import find_existing_path, load_dotenv
+from app.utils import find_existing_path
 
 try:
     import yaml
@@ -46,9 +45,6 @@ class BrowserConfig:
 
 @dataclass(slots=True)
 class CrawlConfig:
-    raw_posts_path: str = "data/raw/raw_posts.jsonl"
-    raw_comments_path: str = "data/raw/raw_comments.jsonl"
-    batches: int = 3
     posts_per_batch: int = 10
     comments_per_post: int = 40
     max_scroll_rounds: int = 20
@@ -61,83 +57,9 @@ class CrawlConfig:
 
 
 @dataclass(slots=True)
-class CleanConfig:
-    input_path: str = "data/raw/raw_comments.jsonl"
-    output_path: str = "data/clean/clean_comments.jsonl"
-    min_text_length: int = 2
-    drop_pattern_texts: list[str] = field(
-        default_factory=lambda: ["作者赞过", "置顶", "展开", "查看更多回复"]
-    )
-
-
-@dataclass(slots=True)
-class LabelingConfig:
-    input_path: str = "data/clean/clean_comments.jsonl"
-    output_path: str = "data/labeled/labeled_comments.jsonl"
-    batch_size: int = 1
-    max_concurrency: int = 4
-    max_retries: int = 3
-    retry_backoff_seconds: float = 2.0
-    low_confidence_threshold: float = 0.7
-    review_on_short_text_chars: int = 6
-    prompt_version: str = "v1-explicit-sentiment"
-
-
-@dataclass(slots=True)
-class ValidationConfig:
-    input_path: str = "data/labeled/labeled_comments.jsonl"
-    report_path: str = "data/exports/validation_report.json"
-    manual_review_path: str = "data/exports/manual_review_sample.csv"
-    manual_review_sample_size: int = 200
-    random_seed: int = 42
-
-
-@dataclass(slots=True)
-class ExportConfig:
-    input_path: str = "data/labeled/labeled_comments.jsonl"
-    output_dir: str = "data/exports"
-    train_ratio: float = 0.8
-    val_ratio: float = 0.1
-    test_ratio: float = 0.1
-    random_seed: int = 42
-
-
-@dataclass(slots=True)
-class TrainingConfig:
-    train_path: str = "data/exports/train.csv"
-    val_path: str = "data/exports/val.csv"
-    test_path: str = "data/exports/test.csv"
-    output_dir: str = "data/models/bert_finetune"
-    pretrained_model_name: str = "hfl/chinese-bert-wwm-ext"
-    max_length: int = 256
-    num_train_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 32
-    learning_rate: float = 2e-5
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.1
-    logging_steps: int = 20
-    seed: int = 42
-    early_stopping_patience: int = 2
-    dataloader_num_workers: int = 0
-
-
-@dataclass(slots=True)
-class RuntimeSettings:
-    api_key: str = ""
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
-
-
-@dataclass(slots=True)
 class AppConfig:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     crawl: CrawlConfig = field(default_factory=CrawlConfig)
-    clean: CleanConfig = field(default_factory=CleanConfig)
-    labeling: LabelingConfig = field(default_factory=LabelingConfig)
-    validation: ValidationConfig = field(default_factory=ValidationConfig)
-    export: ExportConfig = field(default_factory=ExportConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
 
 
 def _update_dataclass(instance: Any, values: dict[str, Any] | None) -> None:
@@ -155,22 +77,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         payload = _load_config_payload(file_path)
         _update_dataclass(config.browser, payload.get("browser"))
         _update_dataclass(config.crawl, payload.get("crawl"))
-        _update_dataclass(config.clean, payload.get("clean"))
-        _update_dataclass(config.labeling, payload.get("labeling"))
-        _update_dataclass(config.validation, payload.get("validation"))
-        _update_dataclass(config.export, payload.get("export"))
-        _update_dataclass(config.training, payload.get("training"))
     return config
-
-
-def load_runtime_settings() -> RuntimeSettings:
-    env_path = _resolve_runtime_path(".env")
-    load_dotenv(env_path)
-    return RuntimeSettings(
-        api_key=os.getenv("OPENAI_API_KEY", ""),
-        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-    )
 
 
 def _load_config_payload(path: Path) -> dict[str, Any]:

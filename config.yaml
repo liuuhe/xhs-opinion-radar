@@ -19,9 +19,6 @@ browser:
     - "--disable-dev-shm-usage"
 
 crawl:
-  raw_posts_path: "data/raw/raw_posts.jsonl"
-  raw_comments_path: "data/raw/raw_comments.jsonl"
-  batches: 3
   posts_per_batch: 10
   comments_per_post: 40
   max_scroll_rounds: 20
@@ -31,57 +28,3 @@ crawl:
   comment_scroll_rounds: 8
   comment_scroll_px: 900
   dedupe_fallback_salt: "public-opinion-v1"
-
-clean:
-  input_path: "data/raw/raw_comments.jsonl"
-  output_path: "data/clean/clean_comments.jsonl"
-  min_text_length: 2
-  drop_pattern_texts:
-    - "作者赞过"
-    - "置顶"
-    - "展开"
-    - "查看更多回复"
-
-labeling:
-  input_path: "data/clean/clean_comments.jsonl"
-  output_path: "data/labeled/labeled_comments.jsonl"
-  batch_size: 1
-  max_concurrency: 1
-  max_retries: 3
-  retry_backoff_seconds: 2.0
-  low_confidence_threshold: 0.5
-  review_on_short_text_chars: 3
-  prompt_version: "v1-explicit-sentiment"
-
-validation:
-  input_path: "data/labeled/labeled_comments.jsonl"
-  report_path: "data/exports/validation_report.json"
-  manual_review_path: "data/exports/manual_review_sample.csv"
-  manual_review_sample_size: 200
-  random_seed: 42
-
-export:
-  input_path: "data/labeled/labeled_comments.jsonl"
-  output_dir: "data/exports"
-  train_ratio: 0.8
-  val_ratio: 0.1
-  test_ratio: 0.1
-  random_seed: 42
-
-training:
-  train_path: "data/exports/train.csv"
-  val_path: "data/exports/val.csv"
-  test_path: "data/exports/test.csv"
-  output_dir: "data/models/bert_finetune"
-  pretrained_model_name: "hfl/chinese-bert-wwm-ext"
-  max_length: 256
-  num_train_epochs: 3
-  train_batch_size: 16
-  eval_batch_size: 32
-  learning_rate: 2.0e-5
-  weight_decay: 0.01
-  warmup_ratio: 0.1
-  logging_steps: 20
-  seed: 42
-  early_stopping_patience: 2
-  dataloader_num_workers: 0

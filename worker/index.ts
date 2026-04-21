@@ -1,9 +1,7 @@
-import type { AnalyzeRequest, ClientCapturedAnalyzeRequest, RemoteLoginActionRequest } from "../src/shared/types";
-import { analyzeClientCapture, analyzeKeyword, streamAnalyzeKeyword } from "./analyze";
+import type { AnalyzeRequest, ClientCapturedAnalyzeRequest } from "../src/shared/types";
+import { analyzeClientCapture, analyzeFixtureRequest } from "./analyze";
 import { ApiError, type Env } from "./env";
 import { errorResponse, jsonResponse, optionsResponse } from "./http";
-import { handleRemoteLoginAction, streamRemoteLogin } from "./login";
-import { getSessionStatus } from "./session";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -16,24 +14,18 @@ export default {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        browserBinding: Boolean(env.BROWSER),
-        kvBinding: Boolean(env.PUBLIC_OPINION_KV),
+        mode: "local-playwright-capture",
         llmConfigured: Boolean(env.OPENAI_API_KEY),
         bertConfigured: Boolean(env.BERT_INFERENCE_URL),
-        remoteLoginConfigured: Boolean(env.LOGIN_ADMIN_TOKEN),
         fixtureEnabled: ["1", "true", "yes"].includes(String(env.LOCAL_FIXTURE_ENABLED || "").toLowerCase()),
         model: env.OPENAI_MODEL || "gpt-4o-mini"
       });
     }
 
-    if (url.pathname === "/api/analyze/stream" && request.method === "GET") {
-      return streamAnalyzeKeyword(env, url);
-    }
-
     if (url.pathname === "/api/analyze" && request.method === "POST") {
       try {
         const body = (await parseJsonBody(request)) as AnalyzeRequest;
-        return jsonResponse(await analyzeKeyword(env, body));
+        return jsonResponse(await analyzeFixtureRequest(env, body));
       } catch (error) {
         return errorResponse(error);
       }
@@ -43,27 +35,6 @@ export default {
       try {
         const body = (await parseJsonBody(request)) as ClientCapturedAnalyzeRequest;
         return jsonResponse(await analyzeClientCapture(env, body));
-      } catch (error) {
-        return errorResponse(error);
-      }
-    }
-
-    if (url.pathname === "/api/session/status" && request.method === "GET") {
-      try {
-        return jsonResponse(await getSessionStatus(env));
-      } catch (error) {
-        return errorResponse(error);
-      }
-    }
-
-    if (url.pathname === "/api/login/stream" && request.method === "GET") {
-      return streamRemoteLogin(env, url);
-    }
-
-    if (url.pathname === "/api/login/action" && request.method === "POST") {
-      try {
-        const body = (await parseJsonBody(request)) as RemoteLoginActionRequest;
-        return jsonResponse(await handleRemoteLoginAction(env, body));
       } catch (error) {
         return errorResponse(error);
       }

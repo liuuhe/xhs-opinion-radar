@@ -5,13 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "public-opinion-pipeline"
 version = "0.1.0"
-description = "Xiaohongshu public opinion data collection and labeling pipeline."
+description = "Local Playwright collector for Xiaohongshu public opinion analysis."
 requires-python = ">=3.11"
 dependencies = [
   "playwright>=1.44.0",
-  "accelerate>=0.34.0",
-  "torch>=2.3.0",
-  "transformers>=4.44.0",
 ]
 
 [project.scripts]

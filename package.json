@@ -9,9 +9,7 @@
     "preview": "npm run build && vite preview --host 0.0.0.0",
     "deploy": "npm run build && wrangler deploy",
     "check": "tsc -b",
-    "test:worker": "vitest run --config vitest.config.ts",
-    "cf:kv:create": "wrangler kv namespace create PUBLIC_OPINION_KV",
-    "cf:upload-session": "wrangler kv key put xhs:storage_state --path sessions/xiaohongshu_storage_state.json --binding PUBLIC_OPINION_KV --remote"
+    "test:worker": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.8",
@@ -31,7 +29,6 @@
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
-    "@cloudflare/playwright": "^1.3.0",
     "@cloudflare/vite-plugin": "^1.18.8",
     "@cloudflare/workers-types": "^4.20260417.0",
     "@tailwindcss/vite": "^4.2.2",

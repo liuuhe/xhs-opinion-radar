@@ -1,17 +1,11 @@
 import type { AnalysisDiagnostics, AnalysisErrorCode } from "../src/shared/types";
 
 export interface Env {
-  BROWSER: unknown;
-  PUBLIC_OPINION_KV: KVNamespace;
   ASSETS?: Fetcher;
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
   OPENAI_MODEL?: string;
   BERT_INFERENCE_URL?: string;
-  LOGIN_ADMIN_TOKEN?: string;
-  XHS_STORAGE_STATE_KEY?: string;
-  ANALYSIS_CACHE_TTL_SECONDS?: string;
-  BROWSER_RATE_LIMIT_COOLDOWN_SECONDS?: string;
   LOCAL_FIXTURE_ENABLED?: string;
 }
 

@@ -5,11 +5,12 @@ import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from app.config import AppConfig
 from app.models import CommentRecord, PostRecord
-from app.storage import append_jsonl
+from app.storage import write_json
 from app.utils import ensure_parent_dir, hash_identifier, normalize_text, utc_now_iso
 
 
@@ -80,12 +81,19 @@ def doctor_browser(config: AppConfig) -> dict[str, Any]:
     }
 
 
-def crawl_home_feed(
+def collect_keyword_capture(
     config: AppConfig,
-    batches: int | None = None,
-    posts_per_batch: int | None = None,
+    keyword: str,
+    posts: int | None = None,
     comments_per_post: int | None = None,
-) -> dict[str, int]:
+    output_path: str | None = None,
+    worker_url: str | None = None,
+    engine: str = "llm",
+) -> dict[str, Any]:
+    keyword = _decode_keyword(keyword)
+    if not keyword:
+        raise RuntimeError("Keyword is required.")
+
     sync_playwright = _load_playwright()
     storage_state_path = Path(config.browser.storage_state_path)
     if not storage_state_path.exists():
@@ -93,68 +101,67 @@ def crawl_home_feed(
             f"Storage state not found at {storage_state_path}. Run `python -m app login` first."
         )
 
-    batches = batches or config.crawl.batches
-    posts_per_batch = posts_per_batch or config.crawl.posts_per_batch
-    comments_per_post = comments_per_post or config.crawl.comments_per_post
-
-    raw_posts_written = 0
-    raw_comments_written = 0
-    seen_comment_keys: set[str] = set()
-    seen_post_ids: set[str] = set()
+    max_posts = posts or config.crawl.posts_per_batch
+    max_comments = comments_per_post or config.crawl.comments_per_post
+    capture_path = output_path or _default_capture_path(keyword)
+    source_page_url = _search_url(keyword)
+    captured_posts: list[dict[str, Any]] = []
 
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright, config, headless=config.browser.headless)
         context = _new_context(browser, config, storage_state=str(storage_state_path))
-        page = context.new_page()
-        page.set_default_timeout(config.browser.default_timeout_ms)
-        _goto_with_fallback(page, [config.browser.home_url], config, label="home feed")
+        search_page = context.new_page()
+        search_page.set_default_timeout(config.browser.default_timeout_ms)
+        search_payloads = _capture_response_payloads(search_page)
+        _goto_with_fallback(search_page, [source_page_url], config, label=f"search keyword {keyword}")
         time.sleep(2)
 
-        for batch_index in range(1, batches + 1):
-            feed_batch_id = f"batch-{int(time.time())}-{batch_index}"
-            post_urls = _collect_feed_post_urls(page, posts_per_batch, config)
-            batch_posts: list[dict[str, Any]] = []
-            batch_comments: list[dict[str, Any]] = []
+        post_urls = _collect_keyword_post_urls(search_page, search_payloads, max_posts, config)
+        feed_batch_id = f"keyword-{hash_identifier(keyword)}-{int(time.time())}"
+        seen_post_ids: set[str] = set()
 
-            for post_url in post_urls:
-                post_page = context.new_page()
-                post_page.set_default_timeout(config.browser.default_timeout_ms)
-                response_payloads = _capture_response_payloads(post_page)
-                try:
-                    _goto_with_fallback(post_page, [post_url], config, label="post detail")
-                    time.sleep(config.crawl.post_open_wait_ms / 1000)
-                    post_data = _extract_post(post_page, post_url, feed_batch_id, config)
-                    if not post_data or post_data.post_id in seen_post_ids:
-                        continue
-                    seen_post_ids.add(post_data.post_id)
-                    batch_posts.append(post_data.to_dict())
-
-                    comments = _extract_comments(
-                        post_page,
-                        post_data,
-                        comments_per_post,
-                        config,
-                        response_payloads,
-                    )
-                    for comment in comments:
-                        if comment.dedupe_key in seen_comment_keys:
-                            continue
-                        seen_comment_keys.add(comment.dedupe_key)
-                        batch_comments.append(comment.to_dict())
-                finally:
-                    post_page.close()
-
-            raw_posts_written += append_jsonl(config.crawl.raw_posts_path, batch_posts)
-            raw_comments_written += append_jsonl(config.crawl.raw_comments_path, batch_comments)
-            _goto_with_fallback(page, [config.browser.home_url], config, label="home feed")
-            time.sleep(1.5)
+        for post_url in post_urls[:max_posts]:
+            post_page = context.new_page()
+            post_page.set_default_timeout(config.browser.default_timeout_ms)
+            response_payloads = _capture_response_payloads(post_page)
+            try:
+                _goto_with_fallback(post_page, [post_url], config, label="post detail")
+                time.sleep(config.crawl.post_open_wait_ms / 1000)
+                post_data = _extract_post(post_page, post_url, feed_batch_id, config)
+                if not post_data or post_data.post_id in seen_post_ids:
+                    continue
+                seen_post_ids.add(post_data.post_id)
+                comments = _extract_comments(post_page, post_data, max_comments, config, response_payloads)
+                captured_posts.append(_to_captured_post(post_data, comments))
+                print(f"[collect] {len(captured_posts)}/{max_posts} {post_data.title or post_data.post_url} comments={len(comments)}")
+            finally:
+                post_page.close()
 
         browser.close()
 
-    return {
-        "posts_written": raw_posts_written,
-        "comments_written": raw_comments_written,
+    capture_payload = {
+        "keyword": keyword,
+        "engine": engine if engine in {"llm", "bert"} else "llm",
+        "maxPosts": max_posts,
+        "commentsPerPost": max_comments,
+        "pageUrl": source_page_url,
+        "posts": captured_posts,
     }
+    write_json(capture_path, capture_payload)
+
+    result: dict[str, Any] = {
+        "keyword": keyword,
+        "posts": len(captured_posts),
+        "comments": sum(len(post.get("comments", [])) for post in captured_posts),
+        "capture_path": capture_path,
+    }
+    if worker_url:
+        analysis = _post_capture_to_worker(worker_url, capture_payload)
+        analysis_path = _default_analysis_path(keyword)
+        write_json(analysis_path, analysis)
+        result["analysis_path"] = analysis_path
+        result["summary"] = analysis.get("summary", "")
+    return result
 
 
 def _load_playwright():
@@ -239,7 +246,12 @@ def _is_relevant_comment_response_url(url: str) -> bool:
     )
 
 
-def _collect_feed_post_urls(page: Any, posts_per_batch: int, config: AppConfig) -> list[str]:
+def _collect_keyword_post_urls(
+    page: Any,
+    response_payloads: list[dict[str, Any]],
+    posts_per_batch: int,
+    config: AppConfig,
+) -> list[str]:
     collected: list[str] = []
     seen: set[str] = set()
 
@@ -248,14 +260,20 @@ def _collect_feed_post_urls(page: Any, posts_per_batch: int, config: AppConfig) 
             """
             () => {
               const anchors = Array.from(document.querySelectorAll("a[href]"));
-              return anchors
-                .map((anchor) => anchor.href)
-                .filter(Boolean);
+              const html = document.documentElement.innerHTML
+                .replaceAll("\\u002F", "/")
+                .replaceAll("\\/", "/")
+                .replaceAll("&amp;", "&");
+              const hrefs = anchors.map((anchor) => anchor.href).filter(Boolean);
+              const matches = Array.from(html.matchAll(/(?:https?:\\/\\/www\\.xiaohongshu\\.com)?\\/(?:explore|discovery\\/item)\\/([0-9a-fA-F]{12,32})(?:[^"'<>\\s]*)/g))
+                .map((match) => match[0]);
+              return hrefs.concat(matches);
             }
             """
         )
+        candidates.extend(_extract_post_urls_from_payloads(response_payloads))
         for url in candidates:
-            normalized = _normalize_post_url(url)
+            normalized = _normalize_post_url(str(url))
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
@@ -265,6 +283,60 @@ def _collect_feed_post_urls(page: Any, posts_per_batch: int, config: AppConfig) 
         page.mouse.wheel(0, config.crawl.feed_scroll_px)
         time.sleep(1.2)
     return collected
+
+
+def _extract_post_urls_from_payloads(payloads: list[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in payloads:
+        payload = item.get("payload")
+        for post in _walk_post_payload(payload):
+            url = _make_post_url(post["post_id"], post.get("xsec_token", ""), post.get("xsec_source", "pc_search"))
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
+def _walk_post_payload(node: Any) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 8 or value is None:
+            return
+        if isinstance(value, list):
+            for child in value:
+                walk(child, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+
+        note_card = value.get("note_card") or value.get("noteCard") or value
+        post_id = str(
+            value.get("note_id")
+            or value.get("noteId")
+            or note_card.get("note_id")
+            or note_card.get("noteId")
+            or note_card.get("id")
+            or ""
+        ).strip()
+        title = str(note_card.get("display_title") or note_card.get("title") or note_card.get("desc") or "").strip()
+        if post_id and title and post_id not in seen:
+            seen.add(post_id)
+            results.append(
+                {
+                    "post_id": post_id,
+                    "xsec_token": str(value.get("xsec_token") or note_card.get("xsec_token") or ""),
+                    "xsec_source": str(value.get("xsec_source") or note_card.get("xsec_source") or "pc_search"),
+                }
+            )
+
+        for child in value.values():
+            walk(child, depth + 1)
+
+    walk(node)
+    return results
 
 
 def _normalize_post_url(url: str) -> str | None:
@@ -278,6 +350,16 @@ def _normalize_post_url(url: str) -> str | None:
     if parsed.query:
         normalized = f"{normalized}?{parsed.query}"
     return normalized
+
+
+def _make_post_url(post_id: str, xsec_token: str = "", xsec_source: str = "pc_search") -> str:
+    url = f"https://www.xiaohongshu.com/explore/{post_id}"
+    query: list[str] = []
+    if xsec_token:
+        query.append(f"xsec_token={quote(xsec_token)}")
+    if xsec_source:
+        query.append(f"xsec_source={quote(xsec_source)}")
+    return f"{url}?{'&'.join(query)}" if query else url
 
 
 def _extract_post(page: Any, post_url: str, feed_batch_id: str, config: AppConfig) -> PostRecord | None:
@@ -663,3 +745,76 @@ def _extract_comments_from_dom(page: Any) -> list[dict[str, Any]]:
         }
         """
     )
+
+
+def _to_captured_post(post: PostRecord, comments: list[CommentRecord]) -> dict[str, Any]:
+    return {
+        "postId": post.post_id,
+        "url": post.post_url,
+        "title": post.title,
+        "description": post.description,
+        "authorHash": post.author_hash,
+        "tags": post.topic_tags,
+        "comments": [_to_captured_comment(comment) for comment in comments],
+    }
+
+
+def _to_captured_comment(comment: CommentRecord) -> dict[str, Any]:
+    source = "network"
+    path_hint = str(comment.raw_snapshot.get("_path_hint", ""))
+    if path_hint.startswith("dom_comment"):
+        source = "dom"
+    elif path_hint.startswith("global"):
+        source = "global"
+    return {
+        "sampleId": f"local-{comment.dedupe_key or comment.comment_id}",
+        "commentId": comment.comment_id,
+        "postId": comment.post_id,
+        "postUrl": comment.post_url,
+        "text": comment.comment_text_raw,
+        "userHash": comment.user_hash,
+        "commentLevel": comment.comment_level,
+        "captureSource": source,
+    }
+
+
+def _search_url(keyword: str) -> str:
+    encoded = quote(keyword)
+    return f"https://www.xiaohongshu.com/search_result?keyword={encoded}&source=web_search_result_notes&type=51"
+
+
+def _decode_keyword(value: str) -> str:
+    decoded = str(value)
+    for _ in range(2):
+        next_value = unquote(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    return normalize_text(decoded)
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff-]+", "-", value).strip("-")
+    return cleaned[:40] or "keyword"
+
+
+def _default_capture_path(keyword: str) -> str:
+    return f"data/captures/public-opinion-{_safe_filename(keyword)}-capture.json"
+
+
+def _default_analysis_path(keyword: str) -> str:
+    return f"data/reports/public-opinion-{_safe_filename(keyword)}-analysis.json"
+
+
+def _post_capture_to_worker(worker_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    endpoint = worker_url.rstrip("/") + "/api/analyze/captured"
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=120) as response:
+        response_body = response.read().decode("utf-8")
+    return json.loads(response_body)
