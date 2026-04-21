@@ -8,6 +8,7 @@ const elements = {
   engine: document.querySelector("#engine"),
   captureBtn: document.querySelector("#captureBtn"),
   autoCaptureBtn: document.querySelector("#autoCaptureBtn"),
+  pauseBtn: document.querySelector("#pauseBtn"),
   analyzeBtn: document.querySelector("#analyzeBtn"),
   status: document.querySelector("#status"),
   result: document.querySelector("#result")
@@ -15,12 +16,14 @@ const elements = {
 
 let currentCapture = null;
 let statusTimer = null;
+let lastAutoStatus = null;
 
 loadSettings();
 void refreshAutoStatus();
 
 elements.captureBtn.addEventListener("click", () => void captureCurrentTab());
 elements.autoCaptureBtn.addEventListener("click", () => void startAutoCapture());
+elements.pauseBtn.addEventListener("click", () => void toggleAutoPause());
 elements.analyzeBtn.addEventListener("click", () => void analyzeCapture());
 
 for (const key of ["workerUrl", "keyword", "maxPosts", "commentsPerPost", "engine"]) {
@@ -43,11 +46,12 @@ async function loadSettings() {
 }
 
 function saveSettings() {
+  const limits = readLimits();
   void chrome.storage.sync.set({
     workerUrl: elements.workerUrl.value.trim() || DEFAULT_WORKER_URL,
     keyword: elements.keyword.value.trim(),
-    maxPosts: Number(elements.maxPosts.value) || 10,
-    commentsPerPost: Number(elements.commentsPerPost.value) || 20,
+    maxPosts: limits.maxPosts,
+    commentsPerPost: limits.commentsPerPost,
     engine: elements.engine.value
   });
 }
@@ -74,6 +78,7 @@ async function captureCurrentTab() {
     setStatus("采集失败，请刷新小红书页面后重试。");
     return;
   }
+  currentCapture = limitCapture(currentCapture, readLimits());
 
   if (!elements.keyword.value.trim()) {
     elements.keyword.value = currentCapture.keywordGuess || "";
@@ -93,6 +98,7 @@ async function startAutoCapture() {
   setStatus("正在启动自动逐帖采集...");
   elements.autoCaptureBtn.disabled = true;
   elements.captureBtn.disabled = true;
+  elements.pauseBtn.disabled = true;
   elements.analyzeBtn.disabled = true;
   elements.result.hidden = true;
 
@@ -101,6 +107,7 @@ async function startAutoCapture() {
     setStatus("请先切换到已登录的小红书搜索页。");
     elements.autoCaptureBtn.disabled = false;
     elements.captureBtn.disabled = false;
+    elements.pauseBtn.disabled = true;
     return;
   }
 
@@ -110,8 +117,7 @@ async function startAutoCapture() {
       activeTabId: tab.id,
       workerUrl: elements.workerUrl.value.trim() || DEFAULT_WORKER_URL,
       keyword: decodeText(elements.keyword.value.trim()),
-      maxPosts: Number(elements.maxPosts.value) || 10,
-      commentsPerPost: Number(elements.commentsPerPost.value) || 20,
+      ...readLimits(),
       engine: elements.engine.value
     }
   });
@@ -119,10 +125,23 @@ async function startAutoCapture() {
     setStatus(response?.error || "自动采集启动失败。");
     elements.autoCaptureBtn.disabled = false;
     elements.captureBtn.disabled = false;
+    elements.pauseBtn.disabled = true;
     return;
   }
   renderAutoStatus(response.status);
   startStatusPolling();
+}
+
+async function toggleAutoPause() {
+  const paused = Boolean(lastAutoStatus?.paused);
+  const response = await chrome.runtime.sendMessage({
+    type: paused ? "XHS_AUTO_CAPTURE_RESUME" : "XHS_AUTO_CAPTURE_PAUSE"
+  });
+  if (!response?.ok) {
+    setStatus(response?.error || "暂停状态切换失败。");
+    return;
+  }
+  renderAutoStatus(response.status);
 }
 
 async function analyzeCapture() {
@@ -132,6 +151,8 @@ async function analyzeCapture() {
   }
   const workerUrl = elements.workerUrl.value.trim().replace(/\/+$/, "");
   const keyword = decodeText(elements.keyword.value.trim() || currentCapture.keywordGuess || "小红书");
+  const limits = readLimits();
+  const capture = limitCapture(currentCapture, limits);
 
   setStatus("正在发送到 Worker 做情绪分析...");
   elements.analyzeBtn.disabled = true;
@@ -143,10 +164,10 @@ async function analyzeCapture() {
       body: JSON.stringify({
         keyword,
         engine: elements.engine.value,
-        maxPosts: Number(elements.maxPosts.value) || 10,
-        commentsPerPost: Number(elements.commentsPerPost.value) || 20,
-        pageUrl: currentCapture.pageUrl,
-        posts: currentCapture.posts
+        maxPosts: limits.maxPosts,
+        commentsPerPost: limits.commentsPerPost,
+        pageUrl: capture.pageUrl,
+        posts: capture.posts
       })
     });
     const payload = await response.json();
@@ -186,6 +207,36 @@ function metric(label, value, html = false) {
 
 function setStatus(message) {
   elements.status.textContent = message;
+}
+
+function readLimits() {
+  return {
+    maxPosts: clampNumber(elements.maxPosts.value, 10, 1, 30),
+    commentsPerPost: clampNumber(elements.commentsPerPost.value, 20, 0, 80)
+  };
+}
+
+function limitCapture(capture, limits) {
+  const posts = (capture.posts || []).slice(0, limits.maxPosts).map((post) => ({
+    ...post,
+    comments: (post.comments || []).slice(0, limits.commentsPerPost)
+  }));
+  return {
+    ...capture,
+    posts,
+    totals: {
+      posts: posts.length,
+      comments: posts.reduce((sum, post) => sum + (post.comments?.length || 0), 0)
+    }
+  };
+}
+
+function clampNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
 function escapeHtml(value) {
@@ -233,9 +284,12 @@ async function refreshAutoStatus() {
 }
 
 function renderAutoStatus(status) {
+  lastAutoStatus = status || null;
   if (!status || status.phase === "idle") {
     elements.autoCaptureBtn.disabled = false;
     elements.captureBtn.disabled = false;
+    elements.pauseBtn.disabled = true;
+    elements.pauseBtn.textContent = "暂停";
     return;
   }
 
@@ -256,10 +310,14 @@ function renderAutoStatus(status) {
   const running = Boolean(status.running);
   elements.autoCaptureBtn.disabled = running;
   elements.captureBtn.disabled = running;
+  elements.pauseBtn.disabled = !running;
+  elements.pauseBtn.textContent = status.paused ? "继续" : "暂停";
   elements.analyzeBtn.disabled = running || !currentCapture || currentCapture.totals.comments === 0;
 
   if (!running && statusTimer) {
     clearInterval(statusTimer);
     statusTimer = null;
+    elements.pauseBtn.disabled = true;
+    elements.pauseBtn.textContent = "暂停";
   }
 }

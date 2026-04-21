@@ -10,11 +10,13 @@ const DEFAULT_STATUS = {
   warnings: [],
   result: null,
   reportUrl: "",
-  error: ""
+  error: "",
+  paused: false
 };
 
 let taskStatus = { ...DEFAULT_STATUS };
 let taskCancelled = false;
+let taskPaused = false;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "XHS_AUTO_CAPTURE_START") {
@@ -23,6 +25,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
     }
     taskCancelled = false;
+    taskPaused = false;
     void runAutoCapture(message.options || {});
     sendResponse({ ok: true, status: taskStatus });
     return false;
@@ -36,6 +39,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "XHS_AUTO_CAPTURE_CANCEL") {
     taskCancelled = true;
     updateStatus({ running: false, phase: "cancelled", message: "自动采集已取消。" });
+    sendResponse({ ok: true, status: taskStatus });
+    return false;
+  }
+
+  if (message?.type === "XHS_AUTO_CAPTURE_PAUSE") {
+    if (!taskStatus.running) {
+      sendResponse({ ok: false, status: taskStatus, error: "当前没有正在运行的自动采集任务。" });
+      return false;
+    }
+    taskPaused = true;
+    updateStatus({ paused: true, phase: "paused", message: "自动采集已暂停。点击继续后从下一篇帖子开始。" });
+    sendResponse({ ok: true, status: taskStatus });
+    return false;
+  }
+
+  if (message?.type === "XHS_AUTO_CAPTURE_RESUME") {
+    if (!taskStatus.running) {
+      sendResponse({ ok: false, status: taskStatus, error: "当前没有正在运行的自动采集任务。" });
+      return false;
+    }
+    taskPaused = false;
+    updateStatus({ paused: false, phase: "capturing", message: "自动采集已继续。" });
     sendResponse({ ok: true, status: taskStatus });
     return false;
   }
@@ -60,10 +85,19 @@ async function runAutoCapture(options) {
       throw new Error("没有可用的小红书标签页。");
     }
 
+    const keyword = decodeText(options.keyword || "");
+    if (keyword) {
+      updateStatus({
+        phase: "searching",
+        message: `正在打开关键词「${keyword}」的小红书搜索结果页。`
+      });
+      await openSearchPageForKeyword(activeTabId, keyword);
+    }
+
     let searchCapture = await discoverCandidates(activeTabId, Math.min(5, targetPosts));
     const candidateQueue = [];
     const queuedCandidateKeys = new Set();
-    enqueueCandidates(candidateQueue, queuedCandidateKeys, searchCapture?.posts || []);
+    enqueueCandidates(candidateQueue, queuedCandidateKeys, searchCapture?.posts || [], targetPosts);
     let candidates = candidateQueue.slice();
 
     if (candidates.length === 0) {
@@ -83,10 +117,16 @@ async function runAutoCapture(options) {
       if (taskCancelled) {
         throw new Error("自动采集已取消。");
       }
+      await waitWhilePaused();
 
       if (candidateQueue.length === 0) {
         searchCapture = await discoverCandidates(activeTabId, Math.min(targetPosts, capturedPosts.length + 3), { light: true });
-        enqueueCandidates(candidateQueue, queuedCandidateKeys, searchCapture?.posts || []);
+        enqueueCandidates(
+          candidateQueue,
+          queuedCandidateKeys,
+          searchCapture?.posts || [],
+          targetPosts - capturedPosts.length - candidateQueue.length
+        );
         candidates = Array.from(queuedCandidateKeys);
       }
 
@@ -106,6 +146,7 @@ async function runAutoCapture(options) {
         discoveredPosts: Math.max(taskStatus.discoveredPosts, queuedCandidateKeys.size),
         message: `正在后台打开第 ${index}/${targetPosts} 篇：${candidate.title || candidate.url}`
       });
+      await waitWhilePaused();
 
       const capture = await capturePostInBackgroundTab({
         candidate,
@@ -144,6 +185,7 @@ async function runAutoCapture(options) {
       phase: "analyzing",
       message: `已采集 ${capturedPosts.length} 篇帖子、${taskStatus.capturedComments} 条评论，正在发送 Worker 分析。`
     });
+    await waitWhilePaused();
 
     const result = await analyzeCapturedPosts(options, searchCapture, capturedPosts);
     updateStatus({
@@ -178,7 +220,55 @@ async function discoverCandidates(activeTabId, minPosts, options = {}) {
   });
 }
 
-function enqueueCandidates(queue, seen, posts) {
+async function openSearchPageForKeyword(activeTabId, keyword) {
+  const tab = await chrome.tabs.get(activeTabId);
+  const currentUrl = tab.url || "";
+  if (isSearchPageForKeyword(currentUrl, keyword)) {
+    return;
+  }
+
+  await chrome.tabs.update(activeTabId, {
+    url: buildSearchUrl(keyword)
+  });
+  await waitForSearchTabReady(activeTabId, keyword, 18000);
+  await delay(900);
+}
+
+function isSearchPageForKeyword(tabUrl, keyword) {
+  try {
+    const url = new URL(tabUrl);
+    if (url.hostname !== "www.xiaohongshu.com" || !url.pathname.startsWith("/search_result")) {
+      return false;
+    }
+    return decodeText(url.searchParams.get("keyword") || "") === keyword;
+  } catch {
+    return false;
+  }
+}
+
+function buildSearchUrl(keyword) {
+  const url = new URL("https://www.xiaohongshu.com/search_result");
+  url.searchParams.set("keyword", keyword);
+  url.searchParams.set("source", "web_search_result_notes");
+  return url.href;
+}
+
+async function waitForSearchTabReady(tabId, keyword, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === "complete" && isSearchPageForKeyword(tab.url || "", keyword)) {
+      return;
+    }
+    await delay(300);
+  }
+  throw new Error("关键词搜索页打开超时，请确认小红书页面可以正常访问。");
+}
+
+function enqueueCandidates(queue, seen, posts, limit = Infinity) {
+  if (limit <= 0) {
+    return;
+  }
   for (const post of filterCandidatePosts(posts || [])) {
     const key = getCandidateKey(post);
     if (!key || seen.has(key)) {
@@ -186,6 +276,18 @@ function enqueueCandidates(queue, seen, posts) {
     }
     seen.add(key);
     queue.push(post);
+    if (queue.length >= limit) {
+      return;
+    }
+  }
+}
+
+async function waitWhilePaused() {
+  while (taskPaused) {
+    if (taskCancelled) {
+      throw new Error("自动采集已取消。");
+    }
+    await delay(300);
   }
 }
 
