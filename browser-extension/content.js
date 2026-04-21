@@ -31,6 +31,19 @@
       sendResponse(buildCapture());
       return false;
     }
+    if (message?.type === "XHS_CAPTURE_SEARCH_SCROLL_AND_GET") {
+      scrollSearchAndCapture(message).then(sendResponse).catch((error) => {
+        sendResponse({
+          ok: false,
+          pageUrl: location.href,
+          pageTitle: document.title,
+          error: error instanceof Error ? error.message : String(error),
+          posts: [],
+          totals: { posts: 0, comments: 0 }
+        });
+      });
+      return true;
+    }
     if (message?.type === "XHS_CAPTURE_SCROLL_AND_GET") {
       scrollAndCapture(message).then(sendResponse).catch((error) => {
         sendResponse({
@@ -107,6 +120,20 @@
     return capture;
   }
 
+  async function scrollSearchAndCapture(options) {
+    const rounds = Number(options.rounds || 4);
+    const delayMs = Number(options.delayMs || 700);
+    for (let index = 0; index < rounds; index += 1) {
+      window.scrollBy({ top: Math.max(700, window.innerHeight * 0.8), behavior: "smooth" });
+      await delay(delayMs);
+      const capture = buildCapture();
+      if (capture.posts.length >= Number(options.minPosts || 3)) {
+        return capture;
+      }
+    }
+    return buildCapture();
+  }
+
   async function clickPostAndCapture(options) {
     const candidate = options.candidate || {};
     const startUrl = location.href;
@@ -167,7 +194,38 @@
         comments: []
       });
     }
+    posts.push(...extractPostsFromHtml());
     return posts;
+  }
+
+  function extractPostsFromHtml() {
+    const html = document.documentElement.innerHTML;
+    const posts = [];
+    const seen = new Set();
+    const pattern = /(?:https:\\?\/\\?\/www\.xiaohongshu\.com)?\\?\/explore\\?\/([0-9a-fA-F]{12,32})(?:[^"'<>\\\s]*)/g;
+    for (const match of html.matchAll(pattern)) {
+      const postId = match[1];
+      if (!postId || seen.has(postId)) {
+        continue;
+      }
+      seen.add(postId);
+      posts.push({
+        postId,
+        url: makePostUrl(postId),
+        title: inferTitleNearPostId(postId) || "小红书帖子",
+        description: "",
+        authorHash: "dom-html-author",
+        tags: [],
+        comments: []
+      });
+    }
+    return posts;
+  }
+
+  function inferTitleNearPostId(postId) {
+    const node = Array.from(document.querySelectorAll("section, div, a"))
+      .find((element) => element.innerHTML.includes(postId));
+    return cleanText(node?.textContent || "").slice(0, 80);
   }
 
   function extractDomComments(postId, postUrl) {

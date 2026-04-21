@@ -58,7 +58,12 @@ async function runAutoCapture(options) {
       throw new Error("没有可用的小红书标签页。");
     }
 
-    let searchCapture = await sendCaptureMessage(activeTabId, { type: "XHS_CAPTURE_GET" });
+    let searchCapture = await sendCaptureMessage(activeTabId, {
+      type: "XHS_CAPTURE_SEARCH_SCROLL_AND_GET",
+      rounds: 4,
+      delayMs: 700,
+      minPosts: Math.min(3, taskStatus.targetPosts)
+    });
     let candidates = filterCandidatePosts(searchCapture?.posts || []);
 
     if (candidates.length === 0) {
@@ -78,7 +83,12 @@ async function runAutoCapture(options) {
         throw new Error("自动采集已取消。");
       }
 
-      searchCapture = await sendCaptureMessage(activeTabId, { type: "XHS_CAPTURE_GET" });
+      searchCapture = await sendCaptureMessage(activeTabId, {
+        type: "XHS_CAPTURE_SEARCH_SCROLL_AND_GET",
+        rounds: index === 0 ? 2 : 1,
+        delayMs: 500,
+        minPosts: 1
+      });
       candidates = filterCandidatePosts(searchCapture?.posts || []);
       const candidate = candidates.find((post) => !visitedPostIds.has(post.postId || post.url));
       if (!candidate) {
