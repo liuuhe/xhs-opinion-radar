@@ -58,10 +58,8 @@ async function runAutoCapture(options) {
       throw new Error("没有可用的小红书标签页。");
     }
 
-    const searchCapture = await sendCaptureMessage(activeTabId, { type: "XHS_CAPTURE_GET" });
-    const candidates = dedupePosts(searchCapture?.posts || [])
-      .filter((post) => /^https:\/\/www\.xiaohongshu\.com\//.test(post.url || ""))
-      .slice(0, taskStatus.targetPosts);
+    let searchCapture = await sendCaptureMessage(activeTabId, { type: "XHS_CAPTURE_GET" });
+    let candidates = filterCandidatePosts(searchCapture?.posts || []);
 
     if (candidates.length === 0) {
       throw new Error("当前页没有提取到帖子链接。请先打开小红书搜索页并滚动加载结果。");
@@ -74,15 +72,24 @@ async function runAutoCapture(options) {
     });
 
     const capturedPosts = [];
-    for (let index = 0; index < candidates.length; index += 1) {
+    const visitedPostIds = new Set();
+    for (let index = 0; index < taskStatus.targetPosts; index += 1) {
       if (taskCancelled) {
         throw new Error("自动采集已取消。");
       }
 
-      const candidate = candidates[index];
+      searchCapture = await sendCaptureMessage(activeTabId, { type: "XHS_CAPTURE_GET" });
+      candidates = filterCandidatePosts(searchCapture?.posts || []);
+      const candidate = candidates.find((post) => !visitedPostIds.has(post.postId || post.url));
+      if (!candidate) {
+        taskStatus.warnings.push(`当前搜索页只找到 ${capturedPosts.length} 篇可继续点击的帖子。`);
+        break;
+      }
+      visitedPostIds.add(candidate.postId || candidate.url);
       updateStatus({
         currentIndex: index + 1,
-        message: `正在采集第 ${index + 1}/${candidates.length} 篇：${candidate.title || candidate.url}`
+        discoveredPosts: Math.max(taskStatus.discoveredPosts, candidates.length),
+        message: `正在采集第 ${index + 1}/${taskStatus.targetPosts} 篇：${candidate.title || candidate.url}`
       });
 
       const capture = await sendCaptureMessage(activeTabId, {
@@ -95,6 +102,7 @@ async function runAutoCapture(options) {
       const bestPost = pickBestPost(capture?.posts || [], candidate);
       if (!bestPost) {
         taskStatus.warnings.push(`第 ${index + 1} 篇未采集到帖子内容：${candidate.url}`);
+        await delay(700);
         continue;
       }
 
@@ -110,7 +118,7 @@ async function runAutoCapture(options) {
         capturedPosts: capturedPosts.length,
         capturedComments: capturedPosts.reduce((sum, post) => sum + (post.comments?.length || 0), 0)
       });
-      await delay(350);
+      await delay(700);
     }
 
     if (capturedPosts.length === 0) {
@@ -193,6 +201,13 @@ function pickBestPost(posts, candidate) {
     .filter((post) => (post.comments || []).length > 0)
     .sort((left, right) => (right.comments?.length || 0) - (left.comments?.length || 0));
   return withComments[0] || posts[0] || null;
+}
+
+function filterCandidatePosts(posts) {
+  return dedupePosts(posts)
+    .filter((post) => /^https:\/\/www\.xiaohongshu\.com\//.test(post.url || ""))
+    .filter((post) => post.postId || post.url)
+    .filter((post) => !/当前页|小红书|登录|通知|发布/.test(String(post.title || "")));
 }
 
 function dedupePosts(posts) {

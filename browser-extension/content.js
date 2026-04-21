@@ -169,11 +169,7 @@
   }
 
   function extractDomComments(postId, postUrl) {
-    const nodes = Array.from(
-      document.querySelectorAll(
-        "[class*='comment'] [class*='content'], [class*='comment'] span, [class*='comment'] p, .comment-item, .comment-inner-container"
-      )
-    );
+    const nodes = getCommentTextNodes();
     const seen = new Set();
     return nodes
       .map((node, index) => ({
@@ -194,6 +190,18 @@
         return true;
       })
       .slice(0, 80);
+  }
+
+  function getCommentTextNodes() {
+    const preferred = Array.from(
+      document.querySelectorAll(
+        "[class*='comment'] [class*='content']:not([class*='author']):not([class*='info']), [class*='comment'] [class*='text']"
+      )
+    );
+    if (preferred.length > 0) {
+      return preferred;
+    }
+    return Array.from(document.querySelectorAll("[class*='comment'] span, [class*='comment'] p, .comment-item, .comment-inner-container"));
   }
 
   function normalizeNetworkPayloads(payloads) {
@@ -462,10 +470,16 @@
   }
 
   function isMeaningfulComment(text) {
-    if (text.length < 2 || text.length > 300) {
+    if (text.length < 4 || text.length > 300) {
       return false;
     }
-    if (/^(回复|展开|收起|赞|分享|收藏|更多|登录|发布|关注|作者赞过)$/u.test(text)) {
+    if (/^(回复|展开|收起|赞|分享|收藏|更多|登录|发布|关注|作者赞过|上海|北京|广东|山东|广西|浙江|江苏)$/u.test(text)) {
+      return false;
+    }
+    if (/^\d+$/.test(text) || /^\d{2}-\d{2}$/.test(text) || /^赞\s*回复?$/.test(text)) {
+      return false;
+    }
+    if (!/[，。！？!?、]/u.test(text) && text.length <= 6) {
       return false;
     }
     return /[\u4e00-\u9fa5A-Za-z0-9]/.test(text);
