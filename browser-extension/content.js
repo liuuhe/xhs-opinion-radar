@@ -7,7 +7,9 @@
   const MAX_NETWORK_PAYLOADS = 80;
   const networkPayloads = [];
 
-  injectBridge();
+  if (localStorage.getItem("xhsOpinionCaptureNetwork") === "1") {
+    injectBridge();
+  }
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.data?.type !== "XHS_OPINION_NETWORK_PAYLOAD") {
