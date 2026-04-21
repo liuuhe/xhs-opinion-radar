@@ -74,6 +74,10 @@
   });
 
   function injectBridge() {
+    if (window.__xhsOpinionBridgeInjected) {
+      return;
+    }
+    window.__xhsOpinionBridgeInjected = true;
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("page-bridge.js");
     script.onload = () => script.remove();
@@ -99,6 +103,10 @@
   }
 
   async function scrollAndCapture(options) {
+    if (options.enableNetwork) {
+      injectBridge();
+      await delay(250);
+    }
     const scrollRounds = Number(options.scrollRounds || 3);
     const scrollDelayMs = Number(options.scrollDelayMs || 550);
     const maxComments = Number(options.maxComments || 80);
@@ -121,6 +129,10 @@
   }
 
   async function scrollSearchAndCapture(options) {
+    if (options.enableNetwork) {
+      injectBridge();
+      await delay(250);
+    }
     const rounds = Number(options.rounds || 4);
     const delayMs = Number(options.delayMs || 700);
     for (let index = 0; index < rounds; index += 1) {
@@ -199,27 +211,55 @@
   }
 
   function extractPostsFromHtml() {
-    const html = document.documentElement.innerHTML;
+    const htmlVariants = getHtmlUrlVariants(document.documentElement.innerHTML);
     const posts = [];
     const seen = new Set();
-    const pattern = /(?:https:\\?\/\\?\/www\.xiaohongshu\.com)?\\?\/explore\\?\/([0-9a-fA-F]{12,32})(?:[^"'<>\\\s]*)/g;
-    for (const match of html.matchAll(pattern)) {
-      const postId = match[1];
-      if (!postId || seen.has(postId)) {
-        continue;
+    const pattern = /(?:https?:\/\/www\.xiaohongshu\.com)?\/(?:explore|discovery\/item)\/([0-9a-fA-F]{12,32})(?:\?[^"'<>\\\s]*)?/g;
+    for (const html of htmlVariants) {
+      for (const match of html.matchAll(pattern)) {
+        const postId = match[1];
+        if (!postId || seen.has(postId)) {
+          continue;
+        }
+        const url = normalizeExtractedPostUrl(match[0], postId);
+        seen.add(postId);
+        posts.push({
+          postId,
+          url,
+          title: inferTitleNearPostId(postId) || "小红书帖子",
+          description: "",
+          authorHash: "dom-html-author",
+          tags: [],
+          comments: []
+        });
       }
-      seen.add(postId);
-      posts.push({
-        postId,
-        url: makePostUrl(postId),
-        title: inferTitleNearPostId(postId) || "小红书帖子",
-        description: "",
-        authorHash: "dom-html-author",
-        tags: [],
-        comments: []
-      });
     }
     return posts;
+  }
+
+  function getHtmlUrlVariants(html) {
+    const normalized = String(html || "")
+      .replace(/&amp;/g, "&")
+      .replace(/\\u002F/g, "/")
+      .replace(/\\\//g, "/")
+      .replace(/%2F/gi, "/")
+      .replace(/%3F/gi, "?")
+      .replace(/%26/gi, "&")
+      .replace(/%3D/gi, "=");
+    return Array.from(new Set([html, normalized, decodeText(normalized)]));
+  }
+
+  function normalizeExtractedPostUrl(rawUrl, postId) {
+    const href = String(rawUrl || "");
+    try {
+      const url = new URL(href.startsWith("http") ? href : `https://www.xiaohongshu.com${href}`);
+      if (url.hostname !== "www.xiaohongshu.com") {
+        return makePostUrl(postId);
+      }
+      return url.href;
+    } catch {
+      return makePostUrl(postId);
+    }
   }
 
   function inferTitleNearPostId(postId) {
