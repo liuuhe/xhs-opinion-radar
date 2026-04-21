@@ -5,6 +5,7 @@ const elements = {
   keyword: document.querySelector("#keyword"),
   maxPosts: document.querySelector("#maxPosts"),
   commentsPerPost: document.querySelector("#commentsPerPost"),
+  concurrency: document.querySelector("#concurrency"),
   engine: document.querySelector("#engine"),
   captureBtn: document.querySelector("#captureBtn"),
   autoCaptureBtn: document.querySelector("#autoCaptureBtn"),
@@ -26,7 +27,7 @@ elements.autoCaptureBtn.addEventListener("click", () => void startAutoCapture())
 elements.pauseBtn.addEventListener("click", () => void toggleAutoPause());
 elements.analyzeBtn.addEventListener("click", () => void analyzeCapture());
 
-for (const key of ["workerUrl", "keyword", "maxPosts", "commentsPerPost", "engine"]) {
+for (const key of ["workerUrl", "keyword", "maxPosts", "commentsPerPost", "concurrency", "engine"]) {
   elements[key].addEventListener("change", saveSettings);
 }
 
@@ -36,12 +37,14 @@ async function loadSettings() {
     keyword: "",
     maxPosts: 10,
     commentsPerPost: 20,
+    concurrency: 2,
     engine: "llm"
   });
   elements.workerUrl.value = saved.workerUrl;
   elements.keyword.value = saved.keyword;
   elements.maxPosts.value = saved.maxPosts;
   elements.commentsPerPost.value = saved.commentsPerPost;
+  elements.concurrency.value = saved.concurrency;
   elements.engine.value = saved.engine;
 }
 
@@ -52,6 +55,7 @@ function saveSettings() {
     keyword: elements.keyword.value.trim(),
     maxPosts: limits.maxPosts,
     commentsPerPost: limits.commentsPerPost,
+    concurrency: limits.concurrency,
     engine: elements.engine.value
   });
 }
@@ -145,6 +149,11 @@ async function toggleAutoPause() {
 }
 
 async function analyzeCapture() {
+  if (lastAutoStatus?.running && lastAutoStatus.paused) {
+    await analyzePausedAutoCapture();
+    return;
+  }
+
   if (!currentCapture) {
     setStatus("请先采集当前页。");
     return;
@@ -166,6 +175,7 @@ async function analyzeCapture() {
         engine: elements.engine.value,
         maxPosts: limits.maxPosts,
         commentsPerPost: limits.commentsPerPost,
+        concurrency: limits.concurrency,
         pageUrl: capture.pageUrl,
         posts: capture.posts
       })
@@ -178,6 +188,22 @@ async function analyzeCapture() {
     setStatus("分析完成。");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "分析失败");
+  } finally {
+    elements.analyzeBtn.disabled = false;
+  }
+}
+
+async function analyzePausedAutoCapture() {
+  setStatus("正在发送暂停状态下已采集的帖子做分析...");
+  elements.analyzeBtn.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AUTO_CAPTURE_ANALYZE_PARTIAL" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "阶段性分析失败。");
+    }
+    renderAutoStatus(response.status);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "阶段性分析失败。");
   } finally {
     elements.analyzeBtn.disabled = false;
   }
@@ -212,7 +238,8 @@ function setStatus(message) {
 function readLimits() {
   return {
     maxPosts: clampNumber(elements.maxPosts.value, 10, 1, 30),
-    commentsPerPost: clampNumber(elements.commentsPerPost.value, 20, 0, 80)
+    commentsPerPost: clampNumber(elements.commentsPerPost.value, 20, 0, 80),
+    concurrency: clampNumber(elements.concurrency.value, 2, 1, 3)
   };
 }
 
@@ -312,7 +339,9 @@ function renderAutoStatus(status) {
   elements.captureBtn.disabled = running;
   elements.pauseBtn.disabled = !running;
   elements.pauseBtn.textContent = status.paused ? "继续" : "暂停";
-  elements.analyzeBtn.disabled = running || !currentCapture || currentCapture.totals.comments === 0;
+  elements.analyzeBtn.disabled = running
+    ? !(status.paused && (status.capturedPosts || 0) > 0)
+    : !currentCapture || currentCapture.totals.comments === 0;
 
   if (!running && statusTimer) {
     clearInterval(statusTimer);
