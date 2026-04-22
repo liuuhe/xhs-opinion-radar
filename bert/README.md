@@ -48,6 +48,58 @@ The archived model copied from that dataset was trained on 2701 rows, validated
 on 338 rows, and tested on 336 rows. Its held-out test metrics were
 `accuracy=0.7738` and `macro_f1=0.7269`.
 
+## Improve Accuracy
+
+The current dataset is model-labeled and imbalanced. Most remaining errors are
+negative comments predicted as neutral, especially short sarcasm or platform
+slang. The most reliable improvement loop is:
+
+1. Evaluate the current model and export high-confidence mistakes.
+2. Manually fill `manual_label` for the exported CSV rows.
+3. Apply those corrections to the training data.
+4. Retrain, compare `test_macro_f1`, then export ONNX and redeploy only if the
+   held-out test metrics improve.
+
+Evaluate and create a review CSV:
+
+```powershell
+cd bert
+python evaluate.py `
+  --model-dir models/xhs-bert-sentiment `
+  --data data/archive-wsl/exports/test.csv `
+  --output-dir models/xhs-bert-sentiment/evaluation-test `
+  --review-limit 120
+```
+
+Open `models/xhs-bert-sentiment/evaluation-test/misclassified_review.csv`,
+fill `manual_label` with `positive`, `neutral`, or `negative`, then apply it:
+
+```powershell
+python apply_manual_review.py `
+  --input data/archive-wsl/exports/train.csv `
+  --review models/xhs-bert-sentiment/evaluation-test/misclassified_review.csv `
+  --output data/archive-wsl/exports/train.corrected.csv
+```
+
+Retrain with macro-F1 model selection:
+
+```powershell
+python train.py `
+  --data data/archive-wsl/exports/train.corrected.csv `
+  --eval-data data/archive-wsl/exports/val.csv `
+  --test-data data/archive-wsl/exports/test.csv `
+  --model hfl/chinese-bert-wwm-ext `
+  --output models/xhs-bert-sentiment-next `
+  --epochs 3 `
+  --batch-size 16 `
+  --learning-rate 2e-5 `
+  --class-weights none
+```
+
+Use class weights only as an experiment. On the current data, a first weighted
+run underperformed the existing model after one epoch, so the default
+recommendation is data correction first.
+
 ## Export ONNX
 
 The inference service prefers `model.onnx` when it exists in the model
