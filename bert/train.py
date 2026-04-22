@@ -51,6 +51,8 @@ class SentimentDataset(Dataset):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fine-tune Chinese BERT for Xiaohongshu sentiment labels.")
     parser.add_argument("--data", default="data/seed.jsonl", help="JSONL or CSV file with text,label columns.")
+    parser.add_argument("--eval-data", help="Optional JSONL or CSV validation file.")
+    parser.add_argument("--test-data", help="Optional JSONL or CSV held-out test file.")
     parser.add_argument("--model", default="google-bert/bert-base-chinese", help="Base Hugging Face model.")
     parser.add_argument("--output", default="models/xhs-bert-sentiment", help="Output model directory.")
     parser.add_argument("--epochs", type=float, default=3)
@@ -64,7 +66,11 @@ def main() -> None:
     if len(rows) < 9:
         raise SystemExit("Need at least 9 labeled rows so each label can appear in train/eval data.")
 
-    train_rows, eval_rows = stratified_split(rows, seed=args.seed)
+    if args.eval_data:
+        train_rows = rows
+        eval_rows = load_rows(Path(args.eval_data))
+    else:
+        train_rows, eval_rows = stratified_split(rows, seed=args.seed)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -96,6 +102,11 @@ def main() -> None:
         compute_metrics=compute_metrics,
     )
     trainer.train()
+    print("eval_metrics", trainer.evaluate())
+    if args.test_data:
+        test_rows = load_rows(Path(args.test_data))
+        print("test_metrics", trainer.evaluate(SentimentDataset(test_rows, tokenizer, args.max_length)))
+
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     trainer.model.config.save_pretrained(output_dir)
@@ -124,7 +135,7 @@ def load_rows(path: Path) -> list[Row]:
 def normalize_rows(items) -> list[Row]:
     rows = []
     for item in items:
-        text = str(item.get("text", "")).strip()
+        text = str(item.get("text") or item.get("text_norm") or "").strip()
         label = str(item.get("label", "")).strip()
         if text and label in LABEL_TO_ID:
             rows.append(Row(text=text[:300], label=label))

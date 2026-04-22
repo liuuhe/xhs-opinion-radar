@@ -31,6 +31,22 @@ improve the model before relying on BERT mode. Local model outputs under
 `models/` are ignored by git and should be uploaded separately to the inference
 runtime.
 
+If the archived WSL dataset is available, train with its existing split:
+
+```bash
+python train.py ^
+  --data "\\wsl.localhost\archlinux\home\julian\projects\public_opinion\data\exports\train.csv" ^
+  --eval-data "\\wsl.localhost\archlinux\home\julian\projects\public_opinion\data\exports\val.csv" ^
+  --test-data "\\wsl.localhost\archlinux\home\julian\projects\public_opinion\data\exports\test.csv" ^
+  --model hfl/chinese-bert-wwm-ext ^
+  --output models/xhs-bert-sentiment ^
+  --epochs 3
+```
+
+The archived model copied from that dataset was trained on 2701 rows, validated
+on 338 rows, and tested on 336 rows. Its held-out test metrics were
+`accuracy=0.7738` and `macro_f1=0.7269`.
+
 ## Run Inference Locally
 
 ```bash
