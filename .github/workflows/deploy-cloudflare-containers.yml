@@ -54,7 +54,29 @@ jobs:
           gh release download "$MODEL_RELEASE_TAG" \
             --pattern "$MODEL_ASSET_NAME" \
             --dir .deploy/model-release
-          unzip -q ".deploy/model-release/$MODEL_ASSET_NAME" -d .deploy/model-unzip
+          python - <<'PY'
+          import pathlib
+          import zipfile
+
+          zip_path = pathlib.Path(".deploy/model-release") / pathlib.Path(__import__("os").environ["MODEL_ASSET_NAME"])
+          target = pathlib.Path(".deploy/model-unzip")
+          target.mkdir(parents=True, exist_ok=True)
+
+          with zipfile.ZipFile(zip_path) as archive:
+              for item in archive.infolist():
+                  normalized = item.filename.replace("\\", "/").strip("/")
+                  if not normalized:
+                      continue
+                  destination = target / normalized
+                  if not destination.resolve().is_relative_to(target.resolve()):
+                      raise SystemExit(f"Refusing to extract path outside target: {item.filename}")
+                  if item.is_dir() or item.filename.endswith(("/", "\\")):
+                      destination.mkdir(parents=True, exist_ok=True)
+                      continue
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  with archive.open(item) as source, destination.open("wb") as output:
+                      output.write(source.read())
+          PY
 
           if [ -f ".deploy/model-unzip/config.json" ]; then
             model_source=".deploy/model-unzip"
