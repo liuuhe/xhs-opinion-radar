@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "npm run build && vite preview --host 0.0.0.0",
     "deploy": "npm run build && wrangler deploy",
+    "deploy:bert": "powershell -ExecutionPolicy Bypass -File scripts/deploy-bert-space.ps1",
     "check": "tsc -b",
     "test:worker": "vitest run --config vitest.config.ts"
   },

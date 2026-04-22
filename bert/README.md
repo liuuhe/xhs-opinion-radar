@@ -65,17 +65,38 @@ curl -X POST http://127.0.0.1:7860/predict ^
 
 ## Deploy To Hugging Face Space
 
-1. Create a new Hugging Face Space with SDK `Docker` or `Gradio/Static` disabled
-   and use this directory as the Space content.
-2. Train a model and upload the model directory contents to `model/` in the Space,
-   or set `MODEL_DIR` to a repo path available in the Space.
-3. Start command: `uvicorn app:app --host 0.0.0.0 --port 7860`.
-4. Configure the Worker variable:
+Automated deployment uses the local `hf` CLI and `git-lfs`/Hub upload support.
+Login once before deploying:
 
 ```bash
-wrangler secret put BERT_INFERENCE_URL
-# value: https://<space-name>.hf.space/predict
-npm run deploy
+hf auth login
+```
+
+Create or update a Docker Space and upload the current local model:
+
+```powershell
+npm run deploy:bert -- `
+  -SpaceRepo "your-hf-user/public-opinion-bert" `
+  -CreateSpace
+```
+
+Also update the Cloudflare Worker secret and deploy the Worker:
+
+```powershell
+npm run deploy:bert -- `
+  -SpaceRepo "your-hf-user/public-opinion-bert" `
+  -CreateSpace `
+  -UpdateWorkerSecret `
+  -DeployWorker
+```
+
+If the inferred Space URL is wrong, pass it explicitly:
+
+```powershell
+npm run deploy:bert -- `
+  -SpaceRepo "your-hf-user/public-opinion-bert" `
+  -SpaceUrl "https://your-hf-user-public-opinion-bert.hf.space" `
+  -UpdateWorkerSecret
 ```
 
 The inference API is compatible with the current Worker:
