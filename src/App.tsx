@@ -16,6 +16,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { AnalysisEngine, AnalysisResponse, ClientCapturedAnalyzeRequest, LabeledSample, SentimentBucket, SentimentLabel } from "./shared/types";
 
 const DEFAULT_WORKER_URL = "https://opinion.liuhe.me";
+const LLM_CHUNK_SIZE = 20;
+const LLM_CHUNK_CONCURRENCY = 3;
+const ESTIMATED_WAVE_SECONDS = 8;
 
 const LABEL_META: Record<SentimentLabel, { name: string; description: string; color: string; badgeClass: string }> = {
   positive: {
@@ -49,6 +52,7 @@ function App() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [processingStatus, setProcessingStatus] = useState("");
+  const [processingProgress, setProcessingProgress] = useState(0);
 
   async function handleFileUpload(file: File | undefined) {
     if (!file) {
@@ -56,6 +60,7 @@ function App() {
     }
     setJsonText(await file.text());
     setError("");
+    setProcessingProgress(0);
     setProcessingStatus(`已载入 ${file.name}，点击“生成/查看报告”开始处理。`);
   }
 
@@ -70,24 +75,30 @@ function App() {
   async function analyzeJson() {
     setError("");
     setProcessingStatus("");
+    setProcessingProgress(5);
     setIsLoading(true);
     let progressTimer: ReturnType<typeof setInterval> | null = null;
     try {
       const payload = JSON.parse(jsonText || "{}") as Partial<ClientCapturedAnalyzeRequest & AnalysisResponse>;
       if (isAnalysisResponse(payload)) {
+        setProcessingProgress(100);
         setProcessingStatus(`已识别为分析报告 JSON，包含 ${payload.totals?.validSamples || 0} 条有效样本，正在直接渲染。`);
         setResult(payload);
         return;
       }
       const stats = summarizeCapturePayload(payload);
+      const initialProgress = estimateAnalysisProgress(stats.comments, 0);
+      setProcessingProgress(initialProgress.percent);
       setProcessingStatus(
-        `已识别为插件采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论。正在发送 Worker 重新分析...`
+        `已识别为插件采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论，共 ${initialProgress.totalBatches} 批。正在发送 Worker 重新分析...`
       );
       const startedAt = Date.now();
       progressTimer = setInterval(() => {
         const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        const progress = estimateAnalysisProgress(stats.comments, elapsed);
+        setProcessingProgress(progress.percent);
         setProcessingStatus(
-          `Worker 正在分析 ${stats.comments} 条评论，已等待 ${elapsed} 秒。首次冷启动或评论较多时会更慢。`
+          `Worker 正在分析，预计处理第 ${progress.startComment}-${progress.endComment} 条评论（第 ${progress.startBatch}-${progress.endBatch}/${progress.totalBatches} 批，最多 ${LLM_CHUNK_CONCURRENCY} 批并发），已等待 ${elapsed} 秒。`
         );
       }, 1000);
       const requestPayload: ClientCapturedAnalyzeRequest = {
@@ -107,6 +118,7 @@ function App() {
       if (!response.ok) {
         throw new Error([analysis.error, analysis.details].filter(Boolean).join("："));
       }
+      setProcessingProgress(100);
       setProcessingStatus(`分析完成：${analysis.totals?.validSamples || 0} 条有效样本。`);
       setResult(analysis as AnalysisResponse);
     } catch (requestError) {
@@ -121,6 +133,7 @@ function App() {
 
   async function loadFixture() {
     setError("");
+    setProcessingProgress(30);
     setProcessingStatus("正在加载演示报告...");
     setIsLoading(true);
     try {
@@ -133,6 +146,7 @@ function App() {
       if (!response.ok) {
         throw new Error([payload.error, payload.details].filter(Boolean).join("："));
       }
+      setProcessingProgress(100);
       setProcessingStatus("演示报告加载完成。");
       setResult(payload as AnalysisResponse);
     } catch (requestError) {
@@ -246,7 +260,7 @@ function App() {
       {isLoading && (
         <Card>
           <CardContent className="grid gap-3 p-4">
-            <Progress value={70} />
+            <Progress value={processingProgress || 10} />
             {processingStatus && <p className="text-muted-foreground text-sm leading-6">{processingStatus}</p>}
           </CardContent>
         </Card>
@@ -673,6 +687,26 @@ function summarizeCapturePayload(value: Partial<ClientCapturedAnalyzeRequest & A
   return {
     posts: posts.length,
     comments: posts.reduce((sum, post) => sum + (Array.isArray(post.comments) ? post.comments.length : 0), 0)
+  };
+}
+
+function estimateAnalysisProgress(totalComments: number, elapsedSeconds: number) {
+  const safeTotal = Math.max(0, totalComments);
+  const totalBatches = Math.max(1, Math.ceil(safeTotal / LLM_CHUNK_SIZE));
+  const totalWaves = Math.max(1, Math.ceil(totalBatches / LLM_CHUNK_CONCURRENCY));
+  const currentWave = Math.min(totalWaves, Math.floor(elapsedSeconds / ESTIMATED_WAVE_SECONDS) + 1);
+  const startBatch = (currentWave - 1) * LLM_CHUNK_CONCURRENCY + 1;
+  const endBatch = Math.min(totalBatches, currentWave * LLM_CHUNK_CONCURRENCY);
+  const startComment = safeTotal === 0 ? 0 : (startBatch - 1) * LLM_CHUNK_SIZE + 1;
+  const endComment = Math.min(safeTotal, endBatch * LLM_CHUNK_SIZE);
+  const percent = Math.min(95, Math.max(8, Math.round((currentWave / totalWaves) * 90)));
+  return {
+    totalBatches,
+    startBatch,
+    endBatch,
+    startComment,
+    endComment,
+    percent
   };
 }
 
