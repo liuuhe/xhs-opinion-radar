@@ -31,13 +31,14 @@ improve the model before relying on BERT mode. Local model outputs under
 `models/` are ignored by git and should be uploaded separately to the inference
 runtime.
 
-If the archived WSL dataset is available, train with its existing split:
+The archived dataset is stored locally under `data/archive-wsl/`. Train with its
+existing split:
 
 ```bash
 python train.py ^
-  --data "\\wsl.localhost\archlinux\home\julian\projects\public_opinion\data\exports\train.csv" ^
-  --eval-data "\\wsl.localhost\archlinux\home\julian\projects\public_opinion\data\exports\val.csv" ^
-  --test-data "\\wsl.localhost\archlinux\home\julian\projects\public_opinion\data\exports\test.csv" ^
+  --data data/archive-wsl/exports/train.csv ^
+  --eval-data data/archive-wsl/exports/val.csv ^
+  --test-data data/archive-wsl/exports/test.csv ^
   --model hfl/chinese-bert-wwm-ext ^
   --output models/xhs-bert-sentiment ^
   --epochs 3
