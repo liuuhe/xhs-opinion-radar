@@ -11,6 +11,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 MODEL_DIR = os.getenv("MODEL_DIR", "model")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "google-bert/bert-base-chinese")
 ONNX_MODEL_FILE = os.getenv("ONNX_MODEL_FILE", "")
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", "256"))
 
 LABELS = ["negative", "neutral", "positive"]
 ID_TO_LABEL = {index: label for index, label in enumerate(LABELS)}
@@ -156,7 +157,7 @@ def predict_probabilities_onnx(texts: list[str]) -> np.ndarray:
         texts,
         padding=True,
         truncation=True,
-        max_length=160,
+        max_length=MAX_LENGTH,
         return_tensors="np",
     )
     inputs = {key: value.astype(np.int64) for key, value in encoded.items() if key in onnx_input_names}
@@ -171,7 +172,7 @@ def predict_probabilities_torch(texts: list[str]) -> torch.Tensor:
         texts,
         padding=True,
         truncation=True,
-        max_length=160,
+        max_length=MAX_LENGTH,
         return_tensors="pt",
     ).to(device)
 

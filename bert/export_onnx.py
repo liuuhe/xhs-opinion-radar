@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -22,10 +23,15 @@ class SequenceClassificationOnnxWrapper(torch.nn.Module):
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="Export the fine-tuned sentiment model to ONNX.")
     parser.add_argument("--model-dir", default="models/xhs-bert-sentiment", help="Fine-tuned Hugging Face model directory.")
     parser.add_argument("--output", default="", help="Output ONNX path. Defaults to <model-dir>/model.onnx.")
-    parser.add_argument("--max-length", type=int, default=160)
+    parser.add_argument("--max-length", type=int, default=256)
     parser.add_argument("--opset", type=int, default=18)
     parser.add_argument("--quantize", action="store_true", help="Also create <model-dir>/model-int8.onnx with dynamic int8 quantization.")
     parser.add_argument("--verify", action="store_true", help="Run a small ONNX Runtime parity check after export.")
@@ -36,7 +42,9 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir, attn_implementation="eager")
+    model.config._attn_implementation = "eager"
+    model.config._attn_implementation_internal = "eager"
     model.eval()
 
     encoded = tokenizer(
@@ -64,7 +72,7 @@ def main() -> None:
             output_names=["logits"],
             dynamic_axes=dynamic_axes,
             opset_version=args.opset,
-            dynamo=False,
+            dynamo=True,
         )
 
     if args.quantize:

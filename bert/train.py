@@ -72,13 +72,14 @@ def main() -> None:
     parser.add_argument("--output", default="models/xhs-bert-sentiment", help="Output model directory.")
     parser.add_argument("--epochs", type=float, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--eval-batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
-    parser.add_argument("--max-length", type=int, default=160)
+    parser.add_argument("--max-length", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--class-weights", choices=["none", "balanced"], default="none")
     parser.add_argument("--warmup-ratio", type=float, default=0.06)
     parser.add_argument("--early-stopping-patience", type=int, default=2)
-    parser.add_argument("--metric-for-best-model", default="macro_f1")
+    parser.add_argument("--metric-for-best-model", default="eval_macro_f1")
     args = parser.parse_args()
 
     rows = load_rows(Path(args.data))
@@ -91,20 +92,24 @@ def main() -> None:
     else:
         train_rows, eval_rows = stratified_split(rows, seed=args.seed)
 
+    disable_hf_auto_conversion()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model,
         num_labels=3,
         id2label=ID_TO_LABEL,
         label2id=LABEL_TO_ID,
+        use_safetensors=False,
     )
+
+    metric_for_best_model = normalize_eval_metric_name(args.metric_for_best_model)
 
     training_args = TrainingArguments(
         output_dir=args.output,
         eval_strategy="epoch",
         learning_rate=args.learning_rate,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.eval_batch_size,
         num_train_epochs=args.epochs,
         weight_decay=0.01,
         logging_steps=10,
@@ -112,10 +117,10 @@ def main() -> None:
         seed=args.seed,
         warmup_ratio=args.warmup_ratio,
         load_best_model_at_end=True,
-        metric_for_best_model=args.metric_for_best_model,
+        metric_for_best_model=metric_for_best_model,
         greater_is_better=True,
         save_strategy="epoch",
-        save_total_limit=1,
+        save_total_limit=2,
     )
 
     class_weights = compute_class_weights(train_rows) if args.class_weights == "balanced" else None
@@ -136,6 +141,9 @@ def main() -> None:
     train_result = trainer.train()
     eval_metrics = trainer.evaluate()
     print("eval_metrics", eval_metrics)
+    if callbacks:
+        trainer.remove_callback(EarlyStoppingCallback)
+
     test_metrics = None
     test_rows = None
     if args.test_data:
@@ -192,6 +200,27 @@ def normalize_rows(items) -> list[Row]:
         if text and label in LABEL_TO_ID:
             rows.append(Row(text=text[:300], label=label))
     return rows
+
+
+def normalize_eval_metric_name(metric_name: str) -> str:
+    metric_name = metric_name.strip()
+    if not metric_name:
+        return "eval_macro_f1"
+    return metric_name if metric_name.startswith("eval_") else f"eval_{metric_name}"
+
+
+def disable_hf_auto_conversion() -> None:
+    try:
+        import transformers.modeling_utils as modeling_utils
+        import transformers.safetensors_conversion as safetensors_conversion
+    except Exception:
+        return
+
+    def skip_auto_conversion(*args, **kwargs):
+        return None, kwargs.get("revision"), False
+
+    modeling_utils.auto_conversion = skip_auto_conversion
+    safetensors_conversion.auto_conversion = skip_auto_conversion
 
 
 def stratified_split(rows: list[Row], seed: int, eval_ratio: float = 0.18) -> tuple[list[Row], list[Row]]:
