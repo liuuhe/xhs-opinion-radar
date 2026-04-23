@@ -12,6 +12,9 @@
     "deploy:bert:cf": "npm run build && wrangler deploy --containers-rollout=immediate",
     "package:bert:model": "powershell -ExecutionPolicy Bypass -File scripts/package-bert-model.ps1",
     "collect:xhs": "node scripts/xhs-playwright-collector.mjs",
+    "dataset:from-captures": "node scripts/dataset-from-captures.mjs",
+    "dataset:label-llm": "node scripts/dataset-label-llm.mjs",
+    "dataset:merge": "node scripts/dataset-merge.mjs",
     "check": "tsc -b",
     "test:worker": "vitest run --config vitest.config.ts"
   },
