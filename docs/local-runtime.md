@@ -75,6 +75,7 @@ npm run mediacrawler:to-capture -- `
 ```
 
 WebUI 的文件上传也支持直接导入 MediaCrawler 原始 `search_comments_*.jsonl`、`search_contents_*.jsonl`、`.json` 或 `.csv` 文件，导入时会先自动转换成 capture JSON。
+MediaCrawler 采集结束后，WebUI 也会自动把转换后的 capture JSON 载入分析区，不需要再手动载入结果。
 
 WebUI 的“暂停采集”会停止当前 crawler 进程，并尝试把已经写入的 JSONL 转换成 capture JSON。如果日志持续显示 CDP 端口不可访问，需要先用远程调试端口启动 Chrome/Edge，或关闭 MediaCrawler 的“连接已有浏览器”配置。
 现在 WebUI 会在开始采集前自动启动带 `--remote-debugging-port=9222` 的 Chrome/Edge 专用采集浏览器。首次使用时需要在这个新浏览器窗口里登录小红书。
