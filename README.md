@@ -11,8 +11,7 @@ https://opinion.liuhe.me
 本地入口也可独立运行，不依赖 Cloudflare：
 
 ```powershell
-npm run local:bert
-npm run local:webui
+npm run local
 ```
 
 打开：

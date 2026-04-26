@@ -14,6 +14,26 @@ Cloudflare remains a deployment option, but it is not required for development, 
 From the repository root:
 
 ```powershell
+npm run local
+```
+
+This one command builds the local WebUI, starts the local BERT service, starts
+the local WebUI API server, opens `http://127.0.0.1:8788`, and keeps both child
+processes alive until Ctrl+C. Logs are written to `.local\logs`.
+
+Common options:
+
+```powershell
+npm run local -- -Runtime torch -BertPort 7860 -WebPort 8788
+npm run local -- -SkipBuild
+npm run local -- -SkipBert
+npm run local -- -NoBrowser
+npm run local -- -ExitAfterReady
+```
+
+To run each service manually instead, start BERT first:
+
+```powershell
 npm run local:bert
 ```
 
@@ -48,7 +68,7 @@ Invoke-WebRequest http://127.0.0.1:7860/health -UseBasicParsing
 
 ## Start Local WebUI
 
-In another terminal:
+Then start the WebUI in another terminal:
 
 ```powershell
 npm run local:webui
