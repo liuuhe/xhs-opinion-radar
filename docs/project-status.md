@@ -16,7 +16,7 @@ The sibling backup directory is archival. It can be kept for reference, but it s
 
 Actual product use should prioritize the browser extension. It reuses the user's normal logged-in browser session, keeps interaction simple, and can send captured data directly to the Worker or export capture JSON for the web app.
 
-Playwright remains available, but its role is auxiliary: dataset expansion, controlled local collection, and fallback collection when the extension is affected by page changes.
+Dataset expansion should now use MediaCrawler as the external collector. This project keeps the analysis, report, dataset, training, and deployment pipeline, and converts MediaCrawler outputs into the existing capture JSON shape.
 
 ## Completed Work
 
@@ -24,7 +24,8 @@ Playwright remains available, but its role is auxiliary: dataset expansion, cont
 - Extension capture is sequential with random delay controls because concurrent capture triggered platform risk controls too easily.
 - Extension supports pause/cancel, export JSON, and send-to-Worker analysis.
 - Web app imports capture JSON and analysis JSON, renders reports, and exports JSON, Markdown, CSV, and print-to-PDF.
-- Playwright collector is available through `npm run collect:xhs` and writes capture JSON compatible with the web app and `/api/analyze/captured`.
+- MediaCrawler output can be converted through `npm run mediacrawler:to-capture` into capture JSON compatible with the web app and `/api/analyze/captured`.
+- The old Playwright collector remains available through `npm run collect:xhs`, but it is now a fallback rather than the preferred dataset collection path.
 - Dataset scripts convert captures to review CSV, run LLM pre-labeling, and merge valid labels into a new training CSV.
 - BERT inference is deployed through Cloudflare Containers and uses ONNX Runtime when `model.onnx` is present.
 - Custom domain is in use: `https://opinion.liuhe.me`.

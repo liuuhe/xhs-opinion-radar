@@ -335,7 +335,7 @@ function App() {
       <section className="grid gap-5 lg:grid-cols-3">
         <ServiceStatusPanel health={health} onRefresh={() => void refreshServiceHealth()} />
         <ModelBaselinePanel />
-        <PlaywrightFallbackPanel />
+        <MediaCrawlerPanel />
       </section>
 
       {error && (
@@ -440,22 +440,22 @@ function ModelBaselinePanel() {
   );
 }
 
-function PlaywrightFallbackPanel() {
+function MediaCrawlerPanel() {
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Terminal className="size-5 text-primary" />
-          Playwright 辅助采集
+          MediaCrawler 外部采集
         </CardTitle>
-        <CardDescription>不作为日常产品入口，主要用于补充训练数据和备用采集。</CardDescription>
+        <CardDescription>采集端交给成熟项目维护，本项目只接收转换后的 capture JSON。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
         <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs leading-6">
-          <code>{'npm run collect:xhs -- --keyword "酒店 避雷" --max-posts 10 --comments-per-post 80'}</code>
+          <code>{'npm run mediacrawler:to-capture -- --input-dir "../MediaCrawler/data/xhs/jsonl" --keyword "酒店 避雷"'}</code>
         </pre>
         <p className="text-muted-foreground text-sm leading-6">
-          采集结果会写入 <code>data/captures/</code>，可导入本页分析，也可进入 dataset 预标注和训练验证流水线。
+          先用 MediaCrawler 采集小红书，再把它的 contents/comments 输出转换到 <code>data/captures/</code>，即可导入本页分析或进入 dataset 流水线。
         </p>
       </CardContent>
     </Card>

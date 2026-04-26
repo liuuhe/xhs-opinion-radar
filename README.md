@@ -1,6 +1,6 @@
 # Public Opinion Pipeline
 
-小红书关键词舆情分析项目。实际使用优先走浏览器插件：在用户自己的登录态里采集帖子和评论，发送到 Cloudflare Worker 分析，再在网页端查看和导出报告。Playwright 采集器保留为补充 dataset 和备用采集方案。
+小红书关键词舆情分析项目。实际使用优先走浏览器插件：在用户自己的登录态里采集帖子和评论，发送到 Cloudflare Worker 分析，再在网页端查看和导出报告。补充 dataset 时优先使用 MediaCrawler，本项目只负责把它的输出转换成可分析的 capture JSON。
 
 线上入口：
 
@@ -113,27 +113,36 @@ npm run package:bert:model
 
 然后把 `.deploy/xhs-bert-sentiment.zip` 上传到 GitHub Release `bert-model`，再手动运行 GitHub Actions 里的 `Deploy Cloudflare Containers`。
 
-## Playwright Auxiliary Collector
+## MediaCrawler Dataset Collector
 
-Playwright 不是日常产品入口，主要用于：
-
-- 补充训练数据。
-- 插件受页面变化影响时备用采集。
-- 需要更可控的本地采集和复现实验时使用。
-
-登录一次：
+小红书采集训练数据时优先使用 [NanmiCoder/MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)。本仓库不再继续扩展自研爬取逻辑，只保留格式适配：
 
 ```powershell
-npm run collect:xhs -- --login
+cd C:\Users\xlyytcy\codespace
+git clone https://github.com/NanmiCoder/MediaCrawler.git
+cd MediaCrawler
+uv sync
+uv run main.py --platform xhs --lt qrcode --type search
 ```
 
-按关键词采集：
+采集完成后回到本项目，把 MediaCrawler 的 `contents/comments` 输出转换为 capture JSON：
 
 ```powershell
-npm run collect:xhs -- --keyword "酒店 避雷" --max-posts 10 --comments-per-post 80
+cd C:\Users\xlyytcy\codespace\public_opinion
+npm run mediacrawler:to-capture -- --input-dir "..\MediaCrawler\data\xhs\jsonl" --keyword "酒店 避雷" --output "data/captures/xhs-mediacrawler-酒店-避雷.json"
 ```
 
-输出默认写入 `data/captures/`，可导入网页分析，也可进入 dataset 流水线。
+也可以显式指定文件：
+
+```powershell
+npm run mediacrawler:to-capture -- `
+  --contents "..\MediaCrawler\data\xhs\jsonl\search_contents_2026-04-26.jsonl" `
+  --comments "..\MediaCrawler\data\xhs\jsonl\search_comments_2026-04-26.jsonl" `
+  --keyword "酒店 避雷" `
+  --output "data/captures/xhs-mediacrawler-酒店-避雷.json"
+```
+
+生成的 JSON 可直接上传网页分析，也可进入 dataset 流水线。更详细说明见 `docs/mediacrawler-integration.md`。
 
 ## Dataset Loop
 
@@ -181,3 +190,4 @@ cd bert
 - 采集基于个人登录态和小红书个性化推荐，论文和答辩中需要说明样本偏差。
 - 若小红书要求扫码、短信或滑块验证，直接在日常浏览器中完成，再重新运行插件采集。
 - 采集保持单线程和随机延迟，不做绕过平台风控的并发或反爬逻辑。
+- MediaCrawler 使用非商业学习许可；接入前需要确认使用场景符合其 LICENSE。

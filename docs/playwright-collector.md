@@ -1,12 +1,11 @@
-# Xiaohongshu Playwright Collector
+# Legacy Xiaohongshu Playwright Collector
 
-The browser extension is the preferred path for actual product use. It is more convenient because it runs in the user's normal logged-in browser session and can send captures directly to the Worker.
+The browser extension remains the preferred path for actual product use. For dataset expansion, prefer MediaCrawler plus `npm run mediacrawler:to-capture`; see `docs/mediacrawler-integration.md`.
 
-This Playwright collector is an auxiliary tool for:
+This legacy Playwright collector is kept only as a fallback tool for:
 
-- adding more comments to the training dataset,
 - reproducing collection runs with a local script,
-- fallback collection when the extension is temporarily affected by page changes.
+- fallback collection when both the extension and MediaCrawler path are temporarily unavailable.
 
 It writes the same capture JSON shape accepted by the web app and `/api/analyze/captured`.
 
