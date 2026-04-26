@@ -18,7 +18,7 @@ with the project workspace for reproducible local training.
 
 ## Current Model
 
-The current local deployable model is stored at:
+The current local model is stored at:
 
 ```text
 bert/models/xhs-bert-sentiment/
@@ -30,5 +30,5 @@ checkpoint directories. The recorded held-out test metrics are:
 - `accuracy=0.7738`
 - `macro_f1=0.7269`
 
-Use the model directory contents as the `model/` folder for the Hugging Face
-Space deployment.
+Use this directory as the default local inference model unless a newer run
+beats the frozen test baseline.

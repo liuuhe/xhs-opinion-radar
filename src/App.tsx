@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import {
-  Activity,
   AlertCircle,
   BarChart3,
   CheckCircle2,
@@ -30,7 +29,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { AnalysisEngine, AnalysisResponse, ClientCapturedAnalyzeRequest, LabeledSample, SentimentBucket, SentimentLabel } from "./shared/types";
 
-const DEFAULT_WORKER_URL = "https://opinion.liuhe.me";
 const LLM_CHUNK_SIZE = 20;
 const LLM_CHUNK_CONCURRENCY = 3;
 const ESTIMATED_WAVE_SECONDS = 8;
@@ -41,24 +39,20 @@ const ANALYSIS_REQUEST_TIMEOUT_MS = 150_000;
 const BERT_WARMUP_TIMEOUT_MS = 90_000;
 type ExportFormat = "json" | "csv" | "markdown" | "pdf";
 
-type ServiceHealthState = {
-  worker?: {
-    ok?: boolean;
-    llmConfigured?: boolean;
-    bertConfigured?: boolean;
-    bertProvider?: string;
-    model?: string;
+type MediaCrawlerStatus = {
+  running: boolean;
+  status: "idle" | "running" | "completed" | "failed";
+  keyword?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode?: number | null;
+  error?: string;
+  capturePath?: string;
+  summary?: {
+    posts: number;
+    comments: number;
   };
-  bert?: {
-    ok?: boolean;
-    runtime?: string;
-    onnxModelFile?: string;
-    modelFile?: string;
-    model_file?: string;
-    model?: string;
-  };
-  isLoading: boolean;
-  error: string;
+  logs: string[];
 };
 
 const LABEL_META: Record<SentimentLabel, { name: string; description: string; color: string; badgeClass: string }> = {
@@ -84,43 +78,15 @@ const LABEL_META: Record<SentimentLabel, { name: string; description: string; co
 
 function App() {
   const [keyword, setKeyword] = useState("咖啡");
-  const [engine, setEngine] = useState<AnalysisEngine>("llm");
+  const [engine, setEngine] = useState<AnalysisEngine>("bert");
   const [maxPosts, setMaxPosts] = useState(10);
   const [commentsPerPost, setCommentsPerPost] = useState(30);
-  const [workerUrl, setWorkerUrl] = useState(getDefaultWorkerUrl());
   const [jsonText, setJsonText] = useState("");
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [processingStatus, setProcessingStatus] = useState("");
   const [processingProgress, setProcessingProgress] = useState(0);
-  const [health, setHealth] = useState<ServiceHealthState>({ isLoading: false, error: "" });
-
-  useEffect(() => {
-    void refreshServiceHealth();
-  }, []);
-
-  async function refreshServiceHealth() {
-    setHealth((current) => ({ ...current, isLoading: true, error: "" }));
-    try {
-      const baseUrl = apiBaseUrl(workerUrl);
-      const [workerResponse, bertResponse] = await Promise.all([fetch(`${baseUrl}/api/health`), fetch(`${baseUrl}/api/bert/health`)]);
-      const workerPayload = await workerResponse.json();
-      const bertPayload = await bertResponse.json();
-      if (!workerResponse.ok) {
-        throw new Error(workerPayload.error || "Worker health check failed");
-      }
-      if (!bertResponse.ok) {
-        throw new Error(bertPayload.error || "BERT health check failed");
-      }
-      setHealth({ worker: workerPayload, bert: bertPayload, isLoading: false, error: "" });
-    } catch (healthError) {
-      setHealth({
-        isLoading: false,
-        error: healthError instanceof Error ? healthError.message : "服务状态检查失败"
-      });
-    }
-  }
 
   async function handleFileUpload(file: File | undefined) {
     if (!file) {
@@ -163,10 +129,10 @@ function App() {
       if (selectedEngine === "bert") {
         try {
           setProcessingProgress(12);
-          setProcessingStatus(`已识别为插件采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论。正在唤醒 BERT 容器，首次请求可能需要几十秒...`);
-          await fetchWithTimeout(`${apiBaseUrl(workerUrl)}/api/bert/health`, BERT_WARMUP_TIMEOUT_MS);
+          setProcessingStatus(`已识别为采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论。正在检查本地 BERT，首次加载模型可能需要几十秒...`);
+          await fetchWithTimeout(`${apiBaseUrl()}/api/bert/health`, BERT_WARMUP_TIMEOUT_MS);
         } catch {
-          setProcessingStatus("BERT 容器健康检查未及时返回，继续提交分析请求；如果容器正在冷启动，本次可能会稍慢。");
+          setProcessingStatus("本地 BERT 健康检查未及时返回，继续提交分析请求；如果模型正在加载，本次可能会稍慢。");
         }
       }
 
@@ -185,7 +151,7 @@ function App() {
         pageUrl: String(payload.pageUrl || ""),
         posts: Array.isArray(payload.posts) ? payload.posts : []
       };
-      const response = await fetchWithTimeout(`${apiBaseUrl(workerUrl)}/api/analyze/captured`, ANALYSIS_REQUEST_TIMEOUT_MS, {
+      const response = await fetchWithTimeout(`${apiBaseUrl()}/api/analyze/captured`, ANALYSIS_REQUEST_TIMEOUT_MS, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestPayload)
@@ -199,7 +165,7 @@ function App() {
       setResult(analysis as AnalysisResponse);
     } catch (requestError) {
       if (requestError instanceof DOMException && requestError.name === "AbortError") {
-        setError("分析请求超过 150 秒仍未返回。若使用 BERT，这通常是容器冷启动或单批推理耗时过长；建议先刷新线上服务状态后重试，或减少本次评论数。");
+        setError("分析请求超过 150 秒仍未返回。若使用 BERT，这通常是本地模型首次加载或单批推理耗时过长；建议确认本地 BERT 仍在运行，或减少本次评论数。");
       } else {
         setError(requestError instanceof Error ? requestError.message : "JSON 解析或分析失败");
       }
@@ -217,7 +183,7 @@ function App() {
     setProcessingStatus("正在加载演示报告...");
     setIsLoading(true);
     try {
-      const response = await fetch(`${apiBaseUrl(workerUrl)}/api/analyze`, {
+      const response = await fetch(`${apiBaseUrl()}/api/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keyword, engine, maxPosts, commentsPerPost, useFixture: true })
@@ -269,73 +235,62 @@ function App() {
       <HeroCard />
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-        <Card className="bg-card/90 backdrop-blur">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Radar className="size-5 text-primary" />
-              插件采集工作台
-            </CardTitle>
-            <CardDescription>用浏览器插件在已登录的小红书页面采集评论，再交给 Worker 生成摘要、洞察和完整报告。</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <TextInput label="关键词" value={keyword} onChange={setKeyword} />
-              <TextInput label="Worker 地址" value={workerUrl} onChange={setWorkerUrl} />
-              <NumberInput label="帖子数" value={maxPosts} onChange={setMaxPosts} min={1} max={30} />
-              <NumberInput label="每帖评论" value={commentsPerPost} onChange={setCommentsPerPost} min={0} max={80} />
-            </div>
-            <div className="grid gap-2">
-              <Label>标注引擎</Label>
-              <Tabs value={engine} onValueChange={(value) => setEngine(value as AnalysisEngine)}>
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="llm">LLM</TabsTrigger>
-                  <TabsTrigger value="bert">BERT 外部推理</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </div>
-            <div className="rounded-xl border bg-muted/30 p-4">
-              <p className="text-sm font-medium">推荐流程</p>
-              <ol className="text-muted-foreground mt-2 grid gap-1 text-sm leading-6">
-                <li>1. 在浏览器扩展页重新加载 <code>browser-extension</code>。</li>
-                <li>2. 打开已登录的小红书页面，填写关键词、帖子数、每帖评论和随机延迟。</li>
-                <li>3. 点击插件里的“自动逐帖”，完成后可直接发送 Worker 分析或导出 JSON。</li>
-                <li>4. 把插件导出的 capture JSON 拖到右侧，网页会生成可导出的报告。</li>
-              </ol>
-            </div>
-            <Button variant="outline" type="button" onClick={() => void loadFixture()} disabled={isLoading}>
-              加载演示报告
-            </Button>
-          </CardContent>
-        </Card>
+        <MediaCrawlerPanel
+          keyword={keyword}
+          setKeyword={setKeyword}
+          maxPosts={maxPosts}
+          setMaxPosts={setMaxPosts}
+          commentsPerPost={commentsPerPost}
+          setCommentsPerPost={setCommentsPerPost}
+          onCaptureLoaded={(captureText) => {
+            setJsonText(captureText);
+            setProcessingProgress(0);
+            setProcessingStatus("MediaCrawler capture JSON 已载入，点击“生成/查看报告”即可用本地模型分析。");
+          }}
+        />
 
         <Card onDragOver={(event) => event.preventDefault()} onDrop={(event) => void handleJsonDrop(event)}>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Upload className="size-5 text-primary" />
-              导入插件数据
+              导入或分析数据
             </CardTitle>
-            <CardDescription>支持插件导出的 capture JSON，也支持 Worker 返回的 analysis JSON。可选择文件、拖拽文件或直接粘贴。</CardDescription>
+            <CardDescription>支持 MediaCrawler 转换出的 capture JSON，也支持已经生成的 analysis JSON。可选择文件、拖拽文件或直接粘贴。</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextInput label="分析关键词" value={keyword} onChange={setKeyword} />
+              <div className="grid gap-2">
+                <Label>标注引擎</Label>
+                <Tabs value={engine} onValueChange={(value) => setEngine(value as AnalysisEngine)}>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="bert">本地 BERT</TabsTrigger>
+                    <TabsTrigger value="llm">本地 LLM</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+            </div>
             <Input type="file" accept="application/json,.json" onChange={(event) => void handleFileUpload(event.target.files?.[0])} />
             <textarea
               className="border-input bg-background min-h-64 rounded-md border p-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               value={jsonText}
               onChange={(event) => setJsonText(event.target.value)}
-              placeholder="粘贴插件导出的 xhs-opinion-*-capture.json，或完整 analysis JSON..."
+              placeholder="粘贴 MediaCrawler capture JSON，或完整 analysis JSON..."
             />
             <Button type="button" onClick={() => void analyzeJson()} disabled={isLoading || !jsonText.trim()}>
               {isLoading ? "处理中..." : "生成/查看报告"}
+            </Button>
+            <Button variant="outline" type="button" onClick={() => void loadFixture()} disabled={isLoading}>
+              加载演示报告
             </Button>
             {processingStatus && <p className="text-muted-foreground text-sm leading-6">{processingStatus}</p>}
           </CardContent>
         </Card>
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-3">
-        <ServiceStatusPanel health={health} onRefresh={() => void refreshServiceHealth()} />
+      <section className="grid gap-5 lg:grid-cols-2">
+        <LocalRuntimePanel />
         <ModelBaselinePanel />
-        <MediaCrawlerPanel />
       </section>
 
       {error && (
@@ -360,17 +315,6 @@ function App() {
   );
 }
 
-function getDefaultWorkerUrl() {
-  const configured = window.PUBLIC_OPINION_CONFIG?.workerUrl?.trim();
-  if (configured) {
-    return configured;
-  }
-  if (["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname)) {
-    return window.location.origin;
-  }
-  return DEFAULT_WORKER_URL;
-}
-
 function HeroCard() {
   return (
     <Card className="glass-panel overflow-hidden border-0">
@@ -380,15 +324,15 @@ function HeroCard() {
             Xiaohongshu Opinion Radar
           </Badge>
           <CardTitle className="text-2xl leading-tight tracking-[-0.04em] md:text-3xl">
-            插件采集评论，云端生成小红书舆情报告。
+            本地采集、本地推理，生成小红书舆情报告。
           </CardTitle>
           <CardDescription className="mt-3 max-w-3xl text-sm leading-6">
-            实际使用优先通过浏览器插件采集和发送分析。Playwright 保留给批量补充 dataset、复现采集过程和插件受页面变化影响时的备用采集。
+            MediaCrawler 负责小红书采集，本机 BERT/LLM 负责情绪标注和报告生成。整个流程通过本地 WebUI 完成。
           </CardDescription>
         </div>
         <div className="grid gap-2 sm:grid-cols-3 md:grid-cols-1">
-          <MetricPill label="采集" value="浏览器插件" />
-          <MetricPill label="分析" value="远程 Worker" />
+          <MetricPill label="采集" value="MediaCrawler" />
+          <MetricPill label="分析" value="本地 BERT" />
           <MetricPill label="沉淀" value="PDF / JSON / CSV" />
         </div>
       </CardContent>
@@ -396,33 +340,23 @@ function HeroCard() {
   );
 }
 
-function ServiceStatusPanel({ health, onRefresh }: { health: ServiceHealthState; onRefresh: () => void }) {
-  const bertModelFile = health.bert?.onnxModelFile || health.bert?.modelFile || health.bert?.model_file || health.bert?.model || "model.onnx";
-
+function LocalRuntimePanel() {
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Activity className="size-5 text-primary" />
-          线上服务状态
+          <Terminal className="size-5 text-primary" />
+          本地运行入口
         </CardTitle>
-        <CardDescription>检查 Worker、LLM 和 BERT 容器是否处于可用状态。</CardDescription>
+        <CardDescription>产品路径已经切到本地 WebUI；采集、分析和导出都在本机完成。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
-        {health.error && (
-          <Alert variant="destructive">
-            <AlertCircle />
-            <AlertTitle>状态检查失败</AlertTitle>
-            <AlertDescription>{health.error}</AlertDescription>
-          </Alert>
-        )}
-        <StatusRow label="Worker" value={health.worker?.ok ? "可用" : health.isLoading ? "检查中" : "未知"} ok={Boolean(health.worker?.ok)} />
-        <StatusRow label="LLM" value={health.worker?.llmConfigured ? health.worker.model || "已配置" : "未配置"} ok={Boolean(health.worker?.llmConfigured)} />
-        <StatusRow label="BERT" value={health.worker?.bertProvider || "未知"} ok={Boolean(health.worker?.bertConfigured)} />
-        <StatusRow label="Runtime" value={health.bert?.runtime || bertModelFile || "未知"} ok={Boolean(health.bert?.ok || health.bert?.runtime)} />
-        <Button type="button" variant="outline" onClick={onRefresh} disabled={health.isLoading}>
-          {health.isLoading ? "检查中..." : "刷新状态"}
-        </Button>
+        <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs leading-6">
+          <code>npm run local</code>
+        </pre>
+        <p className="text-muted-foreground text-sm leading-6">
+          一键启动会构建前端、启动本地 BERT、启动本地 WebUI，并打开 <code>http://127.0.0.1:8788</code>。采集日志会显示在 MediaCrawler 面板中。
+        </p>
       </CardContent>
     </Card>
   );
@@ -436,52 +370,142 @@ function ModelBaselinePanel() {
           <CheckCircle2 className="size-5 text-primary" />
           当前模型基线
         </CardTitle>
-        <CardDescription>线上模型已经足够支撑演示和实际分析，后续部署必须先超过冻结测试集基线。</CardDescription>
+        <CardDescription>当前最佳模型作为本地分析基线，后续新模型仍需超过冻结测试集基线才替换。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
         <div className="rounded-lg border bg-background/70 p-4">
-          <p className="text-muted-foreground text-sm">线上最佳 test macro F1</p>
+          <p className="text-muted-foreground text-sm">当前最佳 test macro F1</p>
           <p className="mt-1 text-3xl font-semibold tracking-tight">{BEST_MODEL_TEST_MACRO_F1}</p>
         </div>
         <p className="text-muted-foreground text-sm leading-6">
-          最近的 LLM 预标注 v3 训练未超过该基线，因此不建议替换线上模型。下一轮模型优化应先提升标签质量，尤其是负向评论与中性评论的边界。
+          最近的 LLM 预标注 v3 训练未超过该基线，因此不建议替换当前模型。下一轮模型优化应先提升标签质量，尤其是负向评论与中性评论的边界。
         </p>
       </CardContent>
     </Card>
   );
 }
 
-function MediaCrawlerPanel() {
+function MediaCrawlerPanel({
+  keyword,
+  setKeyword,
+  maxPosts,
+  setMaxPosts,
+  commentsPerPost,
+  setCommentsPerPost,
+  onCaptureLoaded
+}: {
+  keyword: string;
+  setKeyword: (value: string) => void;
+  maxPosts: number;
+  setMaxPosts: (value: number) => void;
+  commentsPerPost: number;
+  setCommentsPerPost: (value: number) => void;
+  onCaptureLoaded: (captureText: string) => void;
+}) {
+  const [headless, setHeadless] = useState(false);
+  const [status, setStatus] = useState<MediaCrawlerStatus>({ running: false, status: "idle", logs: [] });
+  const [collectorError, setCollectorError] = useState("");
+
+  useEffect(() => {
+    if (!status.running) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshStatus();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [status.running]);
+
+  async function refreshStatus() {
+    const response = await fetch(`${apiBaseUrl()}/api/mediacrawler/status`);
+    const payload = (await response.json()) as MediaCrawlerStatus;
+    setStatus(payload);
+  }
+
+  async function startCollection() {
+    setCollectorError("");
+    try {
+      const response = await fetch(`${apiBaseUrl()}/api/mediacrawler/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword, maxPosts, commentsPerPost, headless })
+      });
+      const payload = (await response.json()) as MediaCrawlerStatus & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "MediaCrawler 启动失败");
+      }
+      setStatus(payload);
+    } catch (error) {
+      setCollectorError(error instanceof Error ? error.message : "MediaCrawler 启动失败");
+    }
+  }
+
+  async function loadCapture() {
+    if (!status.capturePath) {
+      return;
+    }
+    setCollectorError("");
+    try {
+      const response = await fetch(`${apiBaseUrl()}/api/mediacrawler/capture?path=${encodeURIComponent(status.capturePath)}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "读取 capture JSON 失败");
+      }
+      onCaptureLoaded(JSON.stringify(payload, null, 2));
+    } catch (error) {
+      setCollectorError(error instanceof Error ? error.message : "读取 capture JSON 失败");
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Terminal className="size-5 text-primary" />
-          MediaCrawler 外部采集
+          MediaCrawler 采集
         </CardTitle>
-        <CardDescription>采集端交给成熟项目维护，本项目只接收转换后的 capture JSON。</CardDescription>
+        <CardDescription>直接从本地 WebUI 启动 vendored MediaCrawler，完成后自动转换成报告可用的 capture JSON。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
-        <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs leading-6">
-          <code>{'npm run mediacrawler:to-capture -- --input-dir "data/mediacrawler/xhs/jsonl" --keyword "酒店 避雷"'}</code>
-        </pre>
-        <p className="text-muted-foreground text-sm leading-6">
-          先用 MediaCrawler 采集小红书，再把它的 contents/comments 输出转换到 <code>data/captures/</code>，即可导入本页分析或进入 dataset 流水线。
-        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <TextInput label="关键词" value={keyword} onChange={setKeyword} />
+          <NumberInput label="帖子数" value={maxPosts} onChange={setMaxPosts} min={1} max={50} />
+          <NumberInput label="每帖评论" value={commentsPerPost} onChange={setCommentsPerPost} min={0} max={300} />
+          <label className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+            <input type="checkbox" checked={headless} onChange={(event) => setHeadless(event.target.checked)} />
+            无头模式
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => void startCollection()} disabled={status.running}>
+            {status.running ? "采集中..." : "开始采集"}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void refreshStatus()}>
+            刷新日志
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void loadCapture()} disabled={!status.capturePath}>
+            载入结果
+          </Button>
+        </div>
+        {collectorError && (
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertTitle>采集失败</AlertTitle>
+            <AlertDescription>{collectorError}</AlertDescription>
+          </Alert>
+        )}
+        <div className="rounded-lg border bg-background/70 p-3 text-sm">
+          <p className="font-medium">
+            状态：{status.status}
+            {status.summary ? `，${status.summary.posts} 篇帖子 / ${status.summary.comments} 条评论` : ""}
+          </p>
+          {status.capturePath && <p className="text-muted-foreground mt-1 break-all text-xs">{status.capturePath}</p>}
+        </div>
+        <ScrollArea className="h-48 rounded-lg border bg-muted/30 p-3">
+          <pre className="whitespace-pre-wrap text-xs leading-5">{status.logs.length ? status.logs.join("\n") : "等待采集任务..."}</pre>
+        </ScrollArea>
       </CardContent>
     </Card>
-  );
-}
-
-function StatusRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border bg-background/70 px-3 py-2 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="flex min-w-0 items-center gap-2 font-medium">
-        <span className={ok ? "size-2 rounded-full bg-emerald-500" : "size-2 rounded-full bg-amber-500"} />
-        <span className="truncate">{value}</span>
-      </span>
-    </div>
   );
 }
 
@@ -508,7 +532,7 @@ function EmptyReportPreview() {
     <Card>
       <CardHeader>
         <CardTitle>报告预览</CardTitle>
-        <CardDescription>导入插件 JSON 后，这里会展示摘要、关键发现、情绪分布、样本评论和帖子来源。</CardDescription>
+        <CardDescription>采集或导入 capture JSON 后，这里会展示摘要、关键发现、情绪分布、样本评论和帖子来源。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-3">
         <Skeleton className="h-32" />
@@ -540,7 +564,7 @@ function ReportDashboard({ result, onExport }: { result: AnalysisResponse; onExp
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
             <div className="flex flex-wrap gap-2">
-              <Badge>{result.sourceMode === "fixture" ? "fixture 演示" : "插件采集"}</Badge>
+              <Badge>{result.sourceMode === "fixture" ? "fixture 演示" : "本地采集"}</Badge>
               <Badge variant="outline">{result.engine.toUpperCase()}</Badge>
               <Badge variant="outline">{new Date(result.capturedAt).toLocaleString("zh-CN")}</Badge>
             </div>
@@ -934,14 +958,14 @@ function buildAnalysisProgressMessage(
 ) {
   if (engine === "bert") {
     if (phase === "start") {
-      return `已识别为插件采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论。BERT 会先唤醒容器，再按约 ${BERT_CHUNK_SIZE} 条一批推理。`;
+      return `已识别为采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论。本地 BERT 会按约 ${BERT_CHUNK_SIZE} 条一批推理。`;
     }
-    return `BERT 容器正在推理，预计处理第 ${progress.startComment}-${progress.endComment} 条评论（第 ${progress.startBatch}/${progress.totalBatches} 批）。首次冷启动可能较慢，已等待 ${elapsedSeconds} 秒。`;
+    return `本地 BERT 正在推理，预计处理第 ${progress.startComment}-${progress.endComment} 条评论（第 ${progress.startBatch}/${progress.totalBatches} 批）。首次加载模型可能较慢，已等待 ${elapsedSeconds} 秒。`;
   }
   if (phase === "start") {
-    return `已识别为插件采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论，共 ${progress.totalBatches} 批。正在发送 Worker 重新分析...`;
+    return `已识别为采集 JSON：${stats.posts} 篇帖子、${stats.comments} 条评论，共 ${progress.totalBatches} 批。正在交给本地 LLM 分析...`;
   }
-  return `Worker 正在分析，预计处理第 ${progress.startComment}-${progress.endComment} 条评论（第 ${progress.startBatch}-${progress.endBatch}/${progress.totalBatches} 批，最多 ${LLM_CHUNK_CONCURRENCY} 批并发），已等待 ${elapsedSeconds} 秒。`;
+  return `本地 LLM 正在分析，预计处理第 ${progress.startComment}-${progress.endComment} 条评论（第 ${progress.startBatch}-${progress.endBatch}/${progress.totalBatches} 批，最多 ${LLM_CHUNK_CONCURRENCY} 批并发），已等待 ${elapsedSeconds} 秒。`;
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit) {
@@ -1194,8 +1218,8 @@ ${sampleRows || "暂无样本"}
 `;
 }
 
-function apiBaseUrl(value: string): string {
-  return value.trim().replace(/\/+$/, "");
+function apiBaseUrl(): string {
+  return window.location.origin.replace(/\/+$/, "");
 }
 
 export default App;

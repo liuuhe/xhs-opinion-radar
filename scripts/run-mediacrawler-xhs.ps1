@@ -19,6 +19,8 @@ $defaultArgs = @(
   "--type", "search",
   "--save_data_option", "jsonl",
   "--max_concurrency_num", "1",
+  "--get_comment", "true",
+  "--get_sub_comment", "false",
   "--save_data_path", "..\..\data\mediacrawler"
 )
 

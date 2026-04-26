@@ -1,5 +1,5 @@
 {
-  "name": "public-opinion-cloudflare",
+  "name": "public-opinion-local",
   "private": true,
   "version": "0.2.0",
   "type": "module",
@@ -9,23 +9,16 @@
     "local": "powershell -ExecutionPolicy Bypass -File scripts/start-local.ps1",
     "local:webui": "npm run build:local && node scripts/local-webui.mjs",
     "local:bert": "powershell -ExecutionPolicy Bypass -File scripts/start-local-bert.ps1",
-    "build": "tsc -b && vite build",
-    "preview": "npm run build && vite preview --host 0.0.0.0",
-    "deploy": "npm run build && wrangler deploy",
-    "deploy:bert": "powershell -ExecutionPolicy Bypass -File scripts/deploy-bert-space.ps1",
-    "deploy:bert:cf": "npm run build && wrangler deploy --containers-rollout=immediate",
-    "package:bert:model": "powershell -ExecutionPolicy Bypass -File scripts/package-bert-model.ps1",
-    "collect:xhs": "node scripts/xhs-playwright-collector.mjs",
+    "build": "tsc -b && npm run build:local",
+    "preview": "npm run build:local && vite preview --config vite.local.config.ts --host 0.0.0.0",
     "mediacrawler:xhs": "powershell -ExecutionPolicy Bypass -File scripts/run-mediacrawler-xhs.ps1",
     "mediacrawler:to-capture": "node scripts/mediacrawler-to-capture.mjs",
     "dataset:from-captures": "node scripts/dataset-from-captures.mjs",
     "dataset:label-llm": "node scripts/dataset-label-llm.mjs",
     "dataset:merge": "node scripts/dataset-merge.mjs",
-    "check": "tsc -b",
-    "test:worker": "vitest run --config vitest.config.ts"
+    "check": "tsc -b"
   },
   "dependencies": {
-    "@cloudflare/containers": "^0.3.3",
     "@radix-ui/react-label": "^2.1.8",
     "@radix-ui/react-progress": "^1.1.8",
     "@radix-ui/react-scroll-area": "^1.2.10",
@@ -43,8 +36,6 @@
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.18.8",
-    "@cloudflare/workers-types": "^4.20260417.0",
     "@tailwindcss/vite": "^4.2.2",
     "@types/node": "^24.10.2",
     "@types/react": "^19.2.7",
@@ -53,8 +44,6 @@
     "playwright": "^1.59.1",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",
-    "vite": "^7.3.0",
-    "vitest": "^4.0.15",
-    "wrangler": "^4.82.2"
+    "vite": "^7.3.0"
   }
 }

@@ -28,7 +28,7 @@ async function main() {
   if (!options.input || !options.output) {
     throw new Error("Usage: node scripts/dataset-label-llm.mjs --input <review.csv> --output <llm.csv>");
   }
-  if (!options.workerUrl && !options.apiKey) {
+  if (!options.localApiUrl && !options.apiKey) {
     throw new Error("Missing OPENAI_API_KEY. Set it in the environment or pass --api-key.");
   }
 
@@ -43,10 +43,10 @@ async function main() {
   let labeled = 0;
   let failed = 0;
 
-  const labeler = options.workerUrl ? labelWorkerChunk : labelOpenAiChunk;
-  const activeChunks = options.workerUrl ? chunkForWorker(pending) : chunks;
+  const labeler = options.localApiUrl ? labelLocalApiChunk : labelOpenAiChunk;
+  const activeChunks = options.localApiUrl ? chunkForLocalApi(pending) : chunks;
 
-  await mapWithConcurrency(activeChunks, options.workerUrl ? 1 : options.concurrency, async (chunk, chunkIndex) => {
+  await mapWithConcurrency(activeChunks, options.localApiUrl ? 1 : options.concurrency, async (chunk, chunkIndex) => {
     try {
       const labels = await labeler(options, chunk);
       for (const item of chunk) {
@@ -81,7 +81,7 @@ function parseArgs(argv) {
     apiKey: process.env.OPENAI_API_KEY || "",
     baseUrl: process.env.OPENAI_BASE_URL || DEFAULT_BASE_URL,
     model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
-    workerUrl: "",
+    localApiUrl: "",
     chunkSize: DEFAULT_CHUNK_SIZE,
     concurrency: DEFAULT_CONCURRENCY,
     failFast: false,
@@ -109,8 +109,8 @@ function parseArgs(argv) {
       case "--model":
         options.model = nextValue();
         break;
-      case "--worker-url":
-        options.workerUrl = nextValue().replace(/\/+$/, "");
+      case "--local-api-url":
+        options.localApiUrl = nextValue().replace(/\/+$/, "");
         break;
       case "--chunk-size":
         options.chunkSize = clampNumber(nextValue(), DEFAULT_CHUNK_SIZE, 1, 50);
@@ -145,7 +145,7 @@ Environment:
 Examples:
   npm run dataset:label-llm -- --input "bert/data/archive-wsl/exports/new_samples.review.csv" --output "bert/data/archive-wsl/exports/new_samples.llm.csv"
   npm run dataset:label-llm -- --base-url "https://openrouter.ai/api/v1" --model "openai/gpt-4o-mini" --input "bert/data/archive-wsl/exports/new_samples.review.csv" --output "bert/data/archive-wsl/exports/new_samples.llm.csv"
-  npm run dataset:label-llm -- --worker-url "https://opinion.liuhe.me" --input "bert/data/archive-wsl/exports/new_samples.review.csv" --output "bert/data/archive-wsl/exports/new_samples.llm.csv"
+  npm run dataset:label-llm -- --local-api-url "http://127.0.0.1:8788" --input "bert/data/archive-wsl/exports/new_samples.review.csv" --output "bert/data/archive-wsl/exports/new_samples.llm.csv"
 `);
 }
 
@@ -166,7 +166,7 @@ async function labelOpenAiChunk(options, chunk) {
   return parseLlmResponse(await response.json());
 }
 
-async function labelWorkerChunk(options, chunk) {
+async function labelLocalApiChunk(options, chunk) {
   const posts = [];
   const postById = new Map();
   for (const item of chunk) {
@@ -197,7 +197,7 @@ async function labelWorkerChunk(options, chunk) {
     });
   }
 
-  const response = await fetch(`${options.workerUrl}/api/analyze/captured`, {
+  const response = await fetch(`${options.localApiUrl}/api/analyze/captured`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -210,7 +210,7 @@ async function labelWorkerChunk(options, chunk) {
     })
   });
   if (!response.ok) {
-    throw new Error(`Worker labeling failed: ${response.status} ${(await response.text()).slice(0, 300)}`);
+    throw new Error(`Local API labeling failed: ${response.status} ${(await response.text()).slice(0, 300)}`);
   }
 
   const payload = await response.json();
@@ -224,7 +224,7 @@ async function labelWorkerChunk(options, chunk) {
     labelsByText.set(textKey, {
       label,
       confidence: normalizeConfidence(sample.confidence),
-      reasonShort: normalizeText(sample.reasonShort || sample.reason_short || "worker-llm-labeled").slice(0, 120)
+      reasonShort: normalizeText(sample.reasonShort || sample.reason_short || "local-api-llm-labeled").slice(0, 120)
     });
   }
 
@@ -412,7 +412,7 @@ function chunkArray(items, size) {
   return chunks;
 }
 
-function chunkForWorker(items) {
+function chunkForLocalApi(items) {
   const chunks = [];
   let chunk = [];
   let postIds = new Set();

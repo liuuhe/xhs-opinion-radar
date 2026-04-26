@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
@@ -15,6 +16,8 @@ const bertBaseUrl = normalizeBaseUrl(process.env.BERT_INFERENCE_URL || "http://1
 const openaiBaseUrl = normalizeBaseUrl(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
 const openaiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const labels = ["positive", "neutral", "negative"];
+const captureRoot = path.join(root, "data", "captures");
+let crawlerJob = null;
 
 if (!existsSync(staticRoot)) {
   console.error(`Missing ${staticRoot}. Run npm run build:local first.`);
@@ -27,10 +30,6 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "OPTIONS") {
       writeCors(response, 204);
       response.end();
-      return;
-    }
-    if (url.pathname === "/local-config.js") {
-      writeText(response, `window.PUBLIC_OPINION_CONFIG = { workerUrl: window.location.origin };\n`, "application/javascript");
       return;
     }
     if (url.pathname === "/api/health") {
@@ -54,6 +53,20 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/api/analyze/captured" && request.method === "POST") {
       const body = await readJsonBody(request);
       writeJson(response, await analyzeCaptured(body));
+      return;
+    }
+    if (url.pathname === "/api/mediacrawler/run" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      writeJson(response, await startMediaCrawler(body), 202);
+      return;
+    }
+    if (url.pathname === "/api/mediacrawler/status") {
+      writeJson(response, publicCrawlerJob());
+      return;
+    }
+    if (url.pathname === "/api/mediacrawler/capture") {
+      const file = resolveCapturePath(url.searchParams.get("path"));
+      writeJson(response, JSON.parse(await readFile(file, "utf8")));
       return;
     }
     if (url.pathname.startsWith("/api/")) {
@@ -94,6 +107,158 @@ async function analyzeCaptured(request) {
       advice: "本次数据由本地 WebUI 分析；BERT/LLM 推理由本机服务完成。"
     }
   });
+}
+
+async function startMediaCrawler(request) {
+  if (crawlerJob?.running) {
+    const error = new Error("MediaCrawler is already running");
+    error.status = 409;
+    throw error;
+  }
+
+  const keyword = text(request.keyword || "咖啡");
+  const maxPosts = clamp(request.maxPosts, 10, 1, 200);
+  const commentsPerPost = clamp(request.commentsPerPost, 30, 0, 500);
+  const headless = Boolean(request.headless);
+  const outputPath = path.join(captureRoot, `xhs-mediacrawler-${safeFilename(keyword)}-${timestampForFile()}.json`);
+  await mkdir(captureRoot, { recursive: true });
+
+  crawlerJob = {
+    id: stableId(`${keyword}:${Date.now()}`, "mc-job"),
+    keyword,
+    maxPosts,
+    commentsPerPost,
+    outputPath,
+    capturePath: "",
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    running: true,
+    status: "running",
+    exitCode: null,
+    error: "",
+    logs: []
+  };
+
+  const crawlerScript = path.join(root, "scripts", "run-mediacrawler-xhs.ps1");
+  const crawlerArgs = [
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", crawlerScript,
+    "--keywords", keyword,
+    "--max_notes_count", String(maxPosts),
+    "--max_comments_count_singlenotes", String(commentsPerPost),
+    "--headless", String(headless),
+    "--save_data_path", "..\\..\\data\\mediacrawler"
+  ];
+  appendCrawlerLog(`Starting MediaCrawler for "${keyword}"`);
+  const child = spawn("powershell", crawlerArgs, { cwd: root, windowsHide: false });
+  attachProcessLogs(child, "crawler");
+  child.on("error", (error) => finishCrawlerJob(1, error.message));
+  child.on("exit", async (code) => {
+    if (code !== 0) {
+      finishCrawlerJob(code ?? 1, `MediaCrawler exited with code ${code}`);
+      return;
+    }
+    try {
+      appendCrawlerLog("Converting MediaCrawler output to capture JSON...");
+      await runNodeScript(path.join(root, "scripts", "mediacrawler-to-capture.mjs"), [
+        "--input-dir", path.join(root, "data", "mediacrawler", "xhs", "jsonl"),
+        "--keyword", keyword,
+        "--max-posts", String(maxPosts),
+        "--comments-per-post", String(commentsPerPost),
+        "--output", outputPath
+      ]);
+      const capture = JSON.parse(await readFile(outputPath, "utf8"));
+      const comments = Array.isArray(capture.posts) ? capture.posts.reduce((sum, post) => sum + (Array.isArray(post.comments) ? post.comments.length : 0), 0) : 0;
+      crawlerJob.capturePath = outputPath;
+      crawlerJob.status = "completed";
+      crawlerJob.exitCode = 0;
+      crawlerJob.finishedAt = new Date().toISOString();
+      crawlerJob.running = false;
+      crawlerJob.summary = { posts: Array.isArray(capture.posts) ? capture.posts.length : 0, comments };
+      appendCrawlerLog(`Capture JSON ready: ${outputPath}`);
+    } catch (error) {
+      finishCrawlerJob(1, error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  return publicCrawlerJob();
+}
+
+function runNodeScript(script, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], { cwd: root, windowsHide: true });
+    attachProcessLogs(child, "convert");
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Converter exited with code ${code}`));
+      }
+    });
+  });
+}
+
+function attachProcessLogs(child, prefix) {
+  child.stdout?.on("data", (chunk) => appendCrawlerLog(`[${prefix}] ${chunk.toString("utf8").trim()}`));
+  child.stderr?.on("data", (chunk) => appendCrawlerLog(`[${prefix}] ${chunk.toString("utf8").trim()}`));
+}
+
+function appendCrawlerLog(line) {
+  if (!crawlerJob || !line) {
+    return;
+  }
+  crawlerJob.logs.push(...String(line).split(/\r?\n/).map((item) => item.trim()).filter(Boolean));
+  crawlerJob.logs = crawlerJob.logs.slice(-200);
+}
+
+function finishCrawlerJob(exitCode, error) {
+  if (!crawlerJob) {
+    return;
+  }
+  crawlerJob.running = false;
+  crawlerJob.status = "failed";
+  crawlerJob.exitCode = exitCode;
+  crawlerJob.error = error;
+  crawlerJob.finishedAt = new Date().toISOString();
+  appendCrawlerLog(error);
+}
+
+function publicCrawlerJob() {
+  if (!crawlerJob) {
+    return { running: false, status: "idle", logs: [] };
+  }
+  return {
+    id: crawlerJob.id,
+    keyword: crawlerJob.keyword,
+    maxPosts: crawlerJob.maxPosts,
+    commentsPerPost: crawlerJob.commentsPerPost,
+    running: crawlerJob.running,
+    status: crawlerJob.status,
+    startedAt: crawlerJob.startedAt,
+    finishedAt: crawlerJob.finishedAt,
+    exitCode: crawlerJob.exitCode,
+    error: crawlerJob.error,
+    capturePath: crawlerJob.capturePath,
+    summary: crawlerJob.summary,
+    logs: crawlerJob.logs
+  };
+}
+
+function resolveCapturePath(value) {
+  const resolved = path.resolve(String(value || ""));
+  if (!resolved.startsWith(path.resolve(captureRoot) + path.sep) && resolved !== path.resolve(captureRoot)) {
+    const error = new Error("Capture path must be under data/captures");
+    error.status = 400;
+    throw error;
+  }
+  if (!existsSync(resolved)) {
+    const error = new Error("Capture file not found");
+    error.status = 404;
+    throw error;
+  }
+  return resolved;
 }
 
 function sanitizePosts(rawPosts, options) {
@@ -453,6 +618,14 @@ function extractPostId(url) {
 
 function stableId(value, prefix) {
   return `${prefix}-${createHash("sha1").update(String(value)).digest("hex").slice(0, 16)}`;
+}
+
+function safeFilename(value) {
+  return text(value).replace(/[^\p{Script=Han}\w-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "keyword";
+}
+
+function timestampForFile() {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 }
 
 function normalizeBaseUrl(value) {

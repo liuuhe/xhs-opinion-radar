@@ -1,121 +1,77 @@
 # Local Runtime
 
-This project can run fully locally:
+项目现在可以完全本地运行：
 
-- Web UI: local Vite build served by a Node API server.
-- Analysis API: local Node server compatible with `/api/analyze/captured`.
-- BERT: local FastAPI service from `bert/app.py`.
-- Collection: vendored MediaCrawler Xiaohongshu subset under `vendor/mediacrawler-xhs`.
+- WebUI：Vite 构建后由本地 Node API 服务托管。
+- 采集：`vendor/mediacrawler-xhs` 中的 MediaCrawler 小红书子集。
+- 分析：本地 `bert/app.py` FastAPI 服务，或本地 WebUI 通过 `OPENAI_API_KEY` 调用 LLM。
+- 输出：报告 JSON、Markdown、CSV、打印 PDF，以及可进入 dataset 流水线的 capture JSON。
 
-Cloudflare remains a deployment option, but it is not required for development, dataset work, or demos.
-
-## Start Local BERT
-
-From the repository root:
+## 一键启动
 
 ```powershell
 npm run local
 ```
 
-This one command builds the local WebUI, starts the local BERT service, starts
-the local WebUI API server, opens `http://127.0.0.1:8788`, and keeps both child
-processes alive until Ctrl+C. Logs are written to `.local\logs`.
-
-Common options:
-
-```powershell
-npm run local -- -Runtime torch -BertPort 7860 -WebPort 8788
-npm run local -- -SkipBuild
-npm run local -- -SkipBert
-npm run local -- -NoBrowser
-npm run local -- -ExitAfterReady
-```
-
-To run each service manually instead, start BERT first:
-
-```powershell
-npm run local:bert
-```
-
-By default this uses:
-
-```text
-bert\models\xhs-bert-sentiment-oldflow-v2-seed42-e5-b16-lr2e5
-```
-
-The local script defaults to `BERT_RUNTIME=torch`, so a CUDA-enabled PyTorch install can use the local GPU. Cloudflare deployment can still use ONNX.
-
-To choose another model:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start-local-bert.ps1 `
-  -ModelDir "bert\models\xhs-bert-sentiment-v3-llm" `
-  -Runtime torch `
-  -Port 7860
-```
-
-To force ONNX locally:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start-local-bert.ps1 -Runtime onnx
-```
-
-Health check:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:7860/health -UseBasicParsing
-```
-
-## Start Local WebUI
-
-Then start the WebUI in another terminal:
-
-```powershell
-npm run local:webui
-```
-
-Open:
+启动完成后打开：
 
 ```text
 http://127.0.0.1:8788
 ```
 
-When opened from localhost, the frontend automatically uses the local API origin instead of `https://opinion.liuhe.me`.
-
-Optional environment variables:
+常用参数：
 
 ```powershell
-$env:LOCAL_WEBUI_PORT = "8788"
-$env:BERT_INFERENCE_URL = "http://127.0.0.1:7860"
-$env:OPENAI_API_KEY = "..."
-$env:OPENAI_BASE_URL = "https://api.openai.com/v1"
-$env:OPENAI_MODEL = "gpt-4o-mini"
+npm run local -- -SkipBuild
+npm run local -- -NoBrowser
+npm run local -- -Runtime torch
+npm run local -- -Runtime onnx
+npm run local -- -BertPort 7860 -WebPort 8788
+```
+
+日志位置：
+
+```text
+.local\logs
+```
+
+## 分开启动
+
+先启动本地 BERT：
+
+```powershell
+npm run local:bert
+```
+
+再启动本地 WebUI：
+
+```powershell
 npm run local:webui
 ```
 
-## Run Vendored MediaCrawler
-
-The vendored crawler is stored at:
+默认模型目录：
 
 ```text
-vendor\mediacrawler-xhs
+bert\models\xhs-bert-sentiment-oldflow-v2-seed42-e5-b16-lr2e5
 ```
 
-It keeps the Xiaohongshu path from MediaCrawler and removes other platform crawler modules.
+默认 `BERT_RUNTIME=torch`，本机 CUDA PyTorch 可用时会使用 GPU。
 
-Run keyword collection:
+## MediaCrawler
+
+WebUI 可以直接启动 MediaCrawler。命令行等价写法：
 
 ```powershell
-npm run mediacrawler:xhs -- --keywords "酒店 避雷" --max_comments_count_singlenotes 80
+npm run mediacrawler:xhs -- --keywords "酒店 避雷" --max_notes_count 10 --max_comments_count_singlenotes 80
 ```
 
-Default output path:
+默认输出：
 
 ```text
 data\mediacrawler\xhs\jsonl
 ```
 
-Convert crawler output to capture JSON:
+转换 capture JSON：
 
 ```powershell
 npm run mediacrawler:to-capture -- `
@@ -124,10 +80,14 @@ npm run mediacrawler:to-capture -- `
   --output "data\captures\xhs-mediacrawler-酒店-避雷.json"
 ```
 
-Then upload the capture JSON in the local WebUI or send it to `/api/analyze/captured`.
+## LLM 标注
 
-## Notes
+如果使用 LLM，需要设置：
 
-- MediaCrawler is governed by its own non-commercial learning license. See `vendor\mediacrawler-xhs\LICENSE`.
-- Keep crawler concurrency low. The default wrapper uses `--max_concurrency_num 1`.
-- If Xiaohongshu asks for verification, complete it in the real browser session before continuing.
+```powershell
+$env:OPENAI_API_KEY = "..."
+$env:OPENAI_MODEL = "gpt-4o-mini"
+npm run local
+```
+
+未配置 `OPENAI_API_KEY` 时，WebUI 会使用保守规则兜底，适合调试流程，不适合作为最终标签。
