@@ -1,16 +1,8 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { mergeConfig, defineConfig } from "vite";
+import { sharedViteConfig } from "./vite.shared";
 
-const dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  resolve: {
-    alias: {
-      "@": path.resolve(dirname, "./src")
-    }
-  }
-});
+export default mergeConfig(sharedViteConfig, defineConfig({
+  plugins: [react(), tailwindcss()]
+}));
