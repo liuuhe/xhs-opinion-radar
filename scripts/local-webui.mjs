@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
@@ -17,6 +17,7 @@ const bertBaseUrl = normalizeBaseUrl(process.env.BERT_INFERENCE_URL || "http://1
 const labels = ["positive", "neutral", "negative"];
 const captureRoot = path.join(root, "data", "captures");
 const importRoot = path.join(root, ".local", "imports");
+const crawlerJsonlRoot = path.join(root, "data", "mediacrawler", "xhs", "jsonl");
 const cdpPort = 9222;
 const cdpUrl = `http://127.0.0.1:${cdpPort}/json/version`;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
@@ -147,6 +148,7 @@ async function startMediaCrawler(request) {
     error: "",
     process: null,
     stopRequested: false,
+    sourceSnapshot: await snapshotCrawlerJsonlFiles(),
     logs: []
   };
 
@@ -176,7 +178,11 @@ async function startMediaCrawler(request) {
       return;
     }
     try {
-      await convertCrawlerOutput({ keyword, maxPosts, commentsPerPost, outputPath });
+      const changedFiles = await detectChangedCrawlerJsonlFiles(crawlerJob?.sourceSnapshot || new Map());
+      if (changedFiles.contents.length === 0 && changedFiles.comments.length === 0) {
+        throw new Error("No new MediaCrawler output files were written for this run.");
+      }
+      await convertCrawlerOutput({ keyword, maxPosts, commentsPerPost, outputPath, changedFiles });
       const capture = JSON.parse(await readFile(outputPath, "utf8"));
       const comments = Array.isArray(capture.posts) ? capture.posts.reduce((sum, post) => sum + (Array.isArray(post.comments) ? post.comments.length : 0), 0) : 0;
       crawlerJob.capturePath = outputPath;
@@ -317,15 +323,68 @@ async function pauseMediaCrawler() {
   return publicCrawlerJob();
 }
 
-async function convertCrawlerOutput({ keyword, maxPosts, commentsPerPost, outputPath }) {
+async function convertCrawlerOutput({ keyword, maxPosts, commentsPerPost, outputPath, changedFiles }) {
   appendCrawlerLog("Converting MediaCrawler output to capture JSON...");
-  await runNodeScript(path.join(root, "scripts", "mediacrawler-to-capture.mjs"), [
-    "--input-dir", path.join(root, "data", "mediacrawler", "xhs", "jsonl"),
+  const args = [
     "--keyword", keyword,
     "--max-posts", String(maxPosts),
     "--comments-per-post", String(commentsPerPost),
     "--output", outputPath
-  ]);
+  ];
+  for (const file of changedFiles.contents) {
+    args.push("--contents", file);
+  }
+  for (const file of changedFiles.comments) {
+    args.push("--comments", file);
+  }
+  await runNodeScript(path.join(root, "scripts", "mediacrawler-to-capture.mjs"), args);
+}
+
+async function snapshotCrawlerJsonlFiles() {
+  const snapshot = new Map();
+  if (!existsSync(crawlerJsonlRoot)) {
+    return snapshot;
+  }
+  for (const entry of await readdir(crawlerJsonlRoot, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const fullPath = path.join(crawlerJsonlRoot, entry.name);
+    if (!/\.(jsonl|json|csv)$/i.test(entry.name)) {
+      continue;
+    }
+    const fileStat = await stat(fullPath);
+    snapshot.set(fullPath, { mtimeMs: fileStat.mtimeMs, size: fileStat.size });
+  }
+  return snapshot;
+}
+
+async function detectChangedCrawlerJsonlFiles(previousSnapshot) {
+  const changed = { contents: [], comments: [] };
+  if (!existsSync(crawlerJsonlRoot)) {
+    return changed;
+  }
+  for (const entry of await readdir(crawlerJsonlRoot, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const fullPath = path.join(crawlerJsonlRoot, entry.name);
+    const normalized = fullPath.replaceAll(path.sep, "/");
+    const fileStat = await stat(fullPath);
+    const previous = previousSnapshot.get(fullPath);
+    const changedSinceStart = !previous || previous.mtimeMs !== fileStat.mtimeMs || previous.size !== fileStat.size;
+    if (!changedSinceStart) {
+      continue;
+    }
+    if (/(?:^|\/)(?:search|detail)_contents_[^/]+\.(jsonl|json|csv)$/i.test(normalized)) {
+      changed.contents.push(fullPath);
+    } else if (/(?:^|\/)(?:search|detail)_comments_[^/]+\.(jsonl|json|csv)$/i.test(normalized)) {
+      changed.comments.push(fullPath);
+    }
+  }
+  changed.contents.sort((left, right) => left.localeCompare(right));
+  changed.comments.sort((left, right) => left.localeCompare(right));
+  return changed;
 }
 
 function runNodeScript(script, args) {
