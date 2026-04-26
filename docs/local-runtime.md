@@ -13,6 +13,10 @@
 npm run local
 ```
 
+```powershell
+npm run local:stop
+```
+
 启动完成后打开：
 
 ```text

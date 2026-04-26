@@ -12,6 +12,10 @@ MediaCrawler 采集 -> capture JSON -> 本地 BERT 分析 -> WebUI 报告导出
 npm run local
 ```
 
+```powershell
+npm run local:stop
+```
+
 打开：
 
 ```text

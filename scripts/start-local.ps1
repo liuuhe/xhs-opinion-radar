@@ -16,9 +16,11 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $logDir = Join-Path $repoRoot ".local\logs"
+$runDir = Join-Path $repoRoot ".local\run"
 $bertBaseUrl = "http://${HostName}:${BertPort}"
 $webBaseUrl = "http://${HostName}:${WebPort}"
 $startedProcesses = @()
+$trackedPidFiles = @()
 
 function Quote-Argument([string]$value) {
   '"' + ($value -replace '"', '\"') + '"'
@@ -48,6 +50,61 @@ function Wait-HttpOk([string]$Url, [int]$TimeoutSeconds, [string]$Name) {
   throw "$Name did not become healthy within ${TimeoutSeconds}s: $Url"
 }
 
+function Get-PidFilePath([string]$Name) {
+  $safeName = ($Name.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
+  if (-not $safeName) {
+    $safeName = "process"
+  }
+  return Join-Path $runDir "${safeName}.pid.json"
+}
+
+function Save-TrackedProcess(
+  [string]$Name,
+  [int]$ProcessId,
+  [string]$FilePath,
+  [string[]]$Arguments
+) {
+  $pidFile = Get-PidFilePath $Name
+  $payload = [ordered]@{
+    name = $Name
+    pid = $ProcessId
+    createdAt = (Get-Date).ToString("o")
+    filePath = $FilePath
+    arguments = $Arguments
+    workingDirectory = $repoRoot
+  } | ConvertTo-Json -Depth 5
+  Set-Content -LiteralPath $pidFile -Value $payload -Encoding UTF8
+  if ($script:trackedPidFiles -notcontains $pidFile) {
+    $script:trackedPidFiles += $pidFile
+  }
+}
+
+function Remove-TrackedPidFiles {
+  foreach ($pidFile in $script:trackedPidFiles) {
+    if (Test-Path -LiteralPath $pidFile) {
+      Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Clear-StaleTrackedProcesses {
+  if (-not (Test-Path -LiteralPath $runDir)) {
+    return
+  }
+  foreach ($pidFile in Get-ChildItem -LiteralPath $runDir -Filter *.pid.json -File -ErrorAction SilentlyContinue) {
+    try {
+      $payload = Get-Content -LiteralPath $pidFile.FullName -Raw | ConvertFrom-Json
+      $pid = [int]$payload.pid
+      $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+      if ($null -eq $process) {
+        Remove-Item -LiteralPath $pidFile.FullName -Force -ErrorAction SilentlyContinue
+      }
+    } catch {
+      Remove-Item -LiteralPath $pidFile.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Start-HiddenProcess(
   [string]$Name,
   [string]$FilePath,
@@ -66,6 +123,7 @@ function Start-HiddenProcess(
     -RedirectStandardError $StderrPath `
     -PassThru
   $script:startedProcesses += $process
+  Save-TrackedProcess -Name $Name -ProcessId $process.Id -FilePath $FilePath -Arguments $Arguments
   return $process
 }
 
@@ -87,9 +145,12 @@ function Stop-StartedProcesses {
       }
     }
   }
+  Remove-TrackedPidFiles
 }
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+Clear-StaleTrackedProcesses
 
 try {
   Set-Location $repoRoot
@@ -166,6 +227,7 @@ try {
   }
 
   Write-Host "Press Ctrl+C to stop processes started by this command."
+  Write-Host "If anything is left behind, run: npm run local:stop"
 
   while ($true) {
     Start-Sleep -Seconds 3

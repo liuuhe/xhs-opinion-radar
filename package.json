@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build:local": "vite build --config vite.local.config.ts",
     "local": "powershell -ExecutionPolicy Bypass -File scripts/start-local.ps1",
+    "local:stop": "powershell -ExecutionPolicy Bypass -File scripts/stop-local.ps1",
     "local:webui": "npm run build:local && node scripts/local-webui.mjs",
     "local:bert": "powershell -ExecutionPolicy Bypass -File scripts/start-local-bert.ps1",
     "build": "tsc -b && npm run build:local",
