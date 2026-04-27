@@ -146,10 +146,12 @@ async function startMediaCrawler(request) {
     status: "running",
     exitCode: null,
     error: "",
+    warnings: [],
     process: null,
     stopRequested: false,
     sourceSnapshot: await snapshotCrawlerJsonlFiles(),
-    logs: []
+    logs: [],
+    rawOutputSummary: null
   };
 
   await ensureCdpBrowser();
@@ -184,13 +186,26 @@ async function startMediaCrawler(request) {
       }
       await convertCrawlerOutput({ keyword, maxPosts, commentsPerPost, outputPath, changedFiles });
       const capture = JSON.parse(await readFile(outputPath, "utf8"));
+      const rawOutputSummary = await summarizeCrawlerRawOutput(changedFiles);
       const comments = Array.isArray(capture.posts) ? capture.posts.reduce((sum, post) => sum + (Array.isArray(post.comments) ? post.comments.length : 0), 0) : 0;
       crawlerJob.capturePath = outputPath;
-      crawlerJob.status = wasPaused ? "paused" : "completed";
+      crawlerJob.rawOutputSummary = rawOutputSummary;
+      crawlerJob.warnings = buildCrawlerWarnings({ changedFiles, rawOutputSummary, comments });
+      crawlerJob.status = wasPaused ? "paused" : (crawlerJob.warnings.length ? "completed_with_warnings" : "completed");
       crawlerJob.exitCode = 0;
       crawlerJob.finishedAt = new Date().toISOString();
       crawlerJob.running = false;
-      crawlerJob.summary = { posts: Array.isArray(capture.posts) ? capture.posts.length : 0, comments };
+      crawlerJob.summary = {
+        posts: Array.isArray(capture.posts) ? capture.posts.length : 0,
+        comments,
+        changedContentFiles: changedFiles.contents.length,
+        changedCommentFiles: changedFiles.comments.length,
+        declaredCommentPosts: rawOutputSummary.declaredCommentPosts,
+        declaredComments: rawOutputSummary.declaredComments
+      };
+      for (const warning of crawlerJob.warnings) {
+        appendCrawlerLog(`Warning: ${warning}`);
+      }
       appendCrawlerLog(`${wasPaused ? "Paused capture JSON" : "Capture JSON"} ready: ${outputPath}`);
     } catch (error) {
       if (wasPaused) {
@@ -387,6 +402,80 @@ async function detectChangedCrawlerJsonlFiles(previousSnapshot) {
   return changed;
 }
 
+async function summarizeCrawlerRawOutput(changedFiles) {
+  const summary = {
+    contentRecords: 0,
+    commentRecords: 0,
+    declaredCommentPosts: 0,
+    declaredComments: 0
+  };
+  for (const file of changedFiles.contents) {
+    for (const record of await readCrawlerRecords(file)) {
+      if (!record || typeof record !== "object") {
+        continue;
+      }
+      summary.contentRecords += 1;
+      const declared = Number.parseInt(String(record.interact_info?.comment_count ?? record.comment_count ?? "0"), 10);
+      if (Number.isFinite(declared) && declared > 0) {
+        summary.declaredCommentPosts += 1;
+        summary.declaredComments += declared;
+      }
+    }
+  }
+  for (const file of changedFiles.comments) {
+    summary.commentRecords += (await readCrawlerRecords(file)).length;
+  }
+  return summary;
+}
+
+async function readCrawlerRecords(file) {
+  const content = await readFile(file, "utf8");
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return [];
+  }
+  if (file.toLowerCase().endsWith(".jsonl")) {
+    return trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+  if (file.toLowerCase().endsWith(".json")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+      if (parsed && typeof parsed === "object") {
+        return [parsed];
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function buildCrawlerWarnings({ changedFiles, rawOutputSummary, comments }) {
+  const warnings = [];
+  if (changedFiles.contents.length > 0 && changedFiles.comments.length === 0 && rawOutputSummary.declaredCommentPosts > 0) {
+    warnings.push(`本次运行抓到了 ${rawOutputSummary.contentRecords} 篇帖子，但没有生成新的评论文件；这些帖子在原始结果里合计声明约 ${rawOutputSummary.declaredComments} 条评论，说明评论抓取阶段没有成功。`);
+  } else if (changedFiles.comments.length > 0 && comments === 0 && rawOutputSummary.commentRecords > 0) {
+    warnings.push(`本次运行生成了评论原始文件，但转换后的 capture 仍为 0 条评论；需要继续检查评论去重或转换逻辑。`);
+  } else if (changedFiles.comments.length > 0 && rawOutputSummary.commentRecords === 0) {
+    warnings.push("本次运行生成了评论文件，但文件里没有有效评论记录。");
+  }
+  return warnings;
+}
+
 function runNodeScript(script, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script, ...args], { cwd: root, windowsHide: true });
@@ -471,9 +560,11 @@ function publicCrawlerJob() {
     finishedAt: crawlerJob.finishedAt,
     exitCode: crawlerJob.exitCode,
     error: crawlerJob.error,
+    warnings: crawlerJob.warnings,
     targetPath: crawlerJob.outputPath,
     capturePath: crawlerJob.capturePath,
     summary: crawlerJob.summary,
+    rawOutputSummary: crawlerJob.rawOutputSummary,
     logs: crawlerJob.logs
   };
 }

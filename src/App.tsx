@@ -39,17 +39,28 @@ type ExportFormat = "json" | "csv" | "markdown" | "pdf";
 
 type MediaCrawlerStatus = {
   running: boolean;
-  status: "idle" | "running" | "pausing" | "paused" | "completed" | "failed";
+  status: "idle" | "running" | "pausing" | "paused" | "completed" | "completed_with_warnings" | "failed";
   keyword?: string;
   startedAt?: string;
   finishedAt?: string;
   exitCode?: number | null;
   error?: string;
+  warnings?: string[];
   targetPath?: string;
   capturePath?: string;
   summary?: {
     posts: number;
     comments: number;
+    changedContentFiles?: number;
+    changedCommentFiles?: number;
+    declaredCommentPosts?: number;
+    declaredComments?: number;
+  };
+  rawOutputSummary?: {
+    contentRecords: number;
+    commentRecords: number;
+    declaredCommentPosts: number;
+    declaredComments: number;
   };
   logs: string[];
 };
@@ -535,19 +546,42 @@ function MediaCrawlerPanel({
         )}
         <div className="min-w-0 rounded-lg border bg-background/70 p-3 text-sm">
           <p className="font-medium">
-            状态：{status.status}
+            状态：{formatCrawlerStatus(status.status)}
             {status.summary ? `，${status.summary.posts} 篇帖子 / ${status.summary.comments} 条评论` : ""}
           </p>
           {status.running && <p className="text-muted-foreground mt-1 text-xs">如果日志提示等待浏览器，请切到自动打开的 Chrome/Edge 窗口完成小红书登录。</p>}
           {status.targetPath && <p className="text-muted-foreground mt-1 break-all text-xs">导出位置：{status.targetPath}</p>}
           {status.capturePath && <p className="text-muted-foreground mt-1 break-all text-xs">已自动转换并载入：{status.capturePath}</p>}
         </div>
+        {status.warnings?.length ? (
+          <Alert>
+            <AlertCircle />
+            <AlertTitle>Collection warning</AlertTitle>
+            <AlertDescription className="space-y-1">
+              {status.warnings.map((warning, index) => (
+                <p key={`${warning}-${index}`}>{warning}</p>
+              ))}
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <ScrollArea className="h-56 max-w-full overflow-hidden rounded-lg border bg-muted/30 p-3">
           <pre className="max-w-full whitespace-pre-wrap break-words font-mono text-xs leading-5">{status.logs.length ? status.logs.join("\n") : "等待采集任务..."}</pre>
         </ScrollArea>
       </CardContent>
     </Card>
   );
+}
+
+function formatCrawlerStatus(status: MediaCrawlerStatus["status"]) {
+  return {
+    idle: "idle",
+    running: "running",
+    pausing: "pausing",
+    paused: "paused",
+    completed: "completed",
+    completed_with_warnings: "completed (with warnings)",
+    failed: "failed"
+  }[status];
 }
 
 function TextInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
