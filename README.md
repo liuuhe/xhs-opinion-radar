@@ -12,6 +12,8 @@ MediaCrawler 采集 -> capture JSON -> 本地 BERT 分析 -> WebUI 报告导出
 npm run local
 ```
 
+`npm run local` 会先清理本项目上一次留下的本地 WebUI / BERT / 采集浏览器进程，再重新启动。
+
 ```powershell
 npm run local:stop
 ```

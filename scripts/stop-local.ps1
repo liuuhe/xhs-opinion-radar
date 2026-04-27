@@ -78,9 +78,22 @@ function Get-OwnedPortProcessIds {
   return $ids | Sort-Object -Unique
 }
 
+function Get-ProjectCdpBrowserProcessIds {
+  $ids = @()
+  $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -in @("chrome.exe", "msedge.exe") -and
+    [string]$_.CommandLine -match 'public-opinion-(chrome|edge)-cdp'
+  }
+  foreach ($process in $processes) {
+    $ids += [int]$process.ProcessId
+  }
+  return $ids | Sort-Object -Unique
+}
+
 $trackedIds = Get-TrackedProcessIds
 $ownedPortIds = Get-OwnedPortProcessIds
-$allIds = @($trackedIds + $ownedPortIds) | Where-Object { $_ } | Sort-Object -Unique
+$cdpBrowserIds = Get-ProjectCdpBrowserProcessIds
+$allIds = @($trackedIds + $ownedPortIds + $cdpBrowserIds) | Where-Object { $_ } | Sort-Object -Unique
 
 if (-not $allIds.Count) {
   Write-Host "No tracked local WebUI/BERT processes found."

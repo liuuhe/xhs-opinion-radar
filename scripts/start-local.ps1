@@ -9,6 +9,7 @@ param(
   [switch]$SkipBuild,
   [switch]$SkipBert,
   [switch]$NoBrowser,
+  [switch]$SkipPreStop,
   [switch]$ExitAfterReady
 )
 
@@ -150,6 +151,16 @@ function Stop-StartedProcesses {
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+
+if (-not $SkipPreStop) {
+  $stopScript = Join-Path $repoRoot "scripts\stop-local.ps1"
+  Write-Host "Cleaning up existing local stack before startup..."
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript -BertPort $BertPort -WebPort $WebPort
+  if ($LASTEXITCODE -ne 0) {
+    throw "Pre-start cleanup failed with exit code $LASTEXITCODE"
+  }
+}
+
 Clear-StaleTrackedProcesses
 
 try {

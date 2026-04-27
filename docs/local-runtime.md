@@ -13,6 +13,8 @@
 npm run local
 ```
 
+`npm run local` now runs the project cleanup step first, so you normally do not need to run `npm run local:stop` manually before restarting.
+
 ```powershell
 npm run local:stop
 ```
