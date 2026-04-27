@@ -17,6 +17,7 @@ const bertBaseUrl = normalizeBaseUrl(process.env.BERT_INFERENCE_URL || "http://1
 const labels = ["positive", "neutral", "negative"];
 const captureRoot = path.join(root, "data", "captures");
 const importRoot = path.join(root, ".local", "imports");
+const crawlerDir = path.join(root, "vendor", "mediacrawler-xhs");
 const crawlerJsonlRoot = path.join(root, "data", "mediacrawler", "xhs", "jsonl");
 const cdpPort = 9222;
 const cdpUrl = `http://127.0.0.1:${cdpPort}/json/version`;
@@ -156,27 +157,17 @@ async function startMediaCrawler(request) {
 
   await ensureCdpBrowser();
 
-  const crawlerScript = path.join(root, "scripts", "run-mediacrawler-xhs.ps1");
-  const crawlerArgs = [
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", crawlerScript,
-    "--keywords", keyword,
-    "--max_notes_count", String(maxPosts),
-    "--max_comments_count_singlenotes", String(commentsPerPost),
-    "--headless", String(headless),
-    "--start", "1",
-    "--save_data_path", "..\\..\\data\\mediacrawler"
-  ];
+  const crawlerCommand = buildMediaCrawlerCommand({ keyword, maxPosts, commentsPerPost, headless });
   appendCrawlerLog(`Starting MediaCrawler for "${keyword}"`);
-  const child = spawn("powershell", crawlerArgs, { cwd: root, windowsHide: false });
+  appendCrawlerLog(`Crawler command: ${crawlerCommand.display}`);
+  const child = spawn(crawlerCommand.command, crawlerCommand.args, { cwd: crawlerDir, windowsHide: false });
   crawlerJob.process = child;
   attachProcessLogs(child, "crawler");
   child.on("error", (error) => finishCrawlerJob(1, error.message));
-  child.on("exit", async (code) => {
+  child.on("exit", async (code, signal) => {
     const wasPaused = Boolean(crawlerJob?.stopRequested);
     if (code !== 0 && !wasPaused) {
-      finishCrawlerJob(code ?? 1, `MediaCrawler exited with code ${code}`);
+      finishCrawlerJob(code ?? 1, formatMediaCrawlerExit(code, signal));
       return;
     }
     try {
@@ -259,6 +250,63 @@ async function importMediaCrawlerFile(request) {
   };
 }
 
+function buildMediaCrawlerCommand({ keyword, maxPosts, commentsPerPost, headless }) {
+  const crawlerArgs = [
+    "--platform", "xhs",
+    "--lt", "qrcode",
+    "--type", "search",
+    "--save_data_option", "jsonl",
+    "--max_concurrency_num", "1",
+    "--get_comment", "true",
+    "--get_sub_comment", "false",
+    "--save_data_path", "..\\..\\data\\mediacrawler",
+    "--keywords", keyword,
+    "--max_notes_count", String(maxPosts),
+    "--max_comments_count_singlenotes", String(commentsPerPost),
+    "--headless", String(headless),
+    "--start", "1"
+  ];
+  const uvPath = findExecutableOnPath(["uv.exe", "uv.cmd", "uv"]);
+  if (uvPath) {
+    return {
+      command: uvPath,
+      args: ["run", "main.py", ...crawlerArgs],
+      display: `uv run main.py ${crawlerArgs.join(" ")}`
+    };
+  }
+  const pythonPath = findExecutableOnPath(["python.exe", "python"]);
+  return {
+    command: pythonPath || "python",
+    args: ["main.py", ...crawlerArgs],
+    display: `python main.py ${crawlerArgs.join(" ")}`
+  };
+}
+
+function findExecutableOnPath(candidates) {
+  const pathEntries = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (const dir of pathEntries) {
+    for (const candidate of candidates) {
+      const fullPath = path.join(dir, candidate);
+      if (existsSync(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+  return "";
+}
+
+function formatMediaCrawlerExit(code, signal) {
+  if (signal) {
+    return `MediaCrawler was stopped by signal ${signal}`;
+  }
+  const numericCode = Number(code ?? 1);
+  const hexCode = `0x${(numericCode >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
+  if (numericCode === 3221225794) {
+    return `MediaCrawler exited with code ${numericCode} (${hexCode}: Windows DLL initialization failed). This usually means the crawler process did not start cleanly. Run npm run local:stop, close stale Chrome/PowerShell windows if needed, then start again.`;
+  }
+  return `MediaCrawler exited with code ${numericCode} (${hexCode})`;
+}
+
 async function ensureCdpBrowser() {
   if (await isCdpAvailable()) {
     appendCrawlerLog(`CDP browser is ready on port ${cdpPort}.`);
@@ -287,8 +335,11 @@ async function ensureCdpBrowser() {
     windowsHide: false
   }).unref();
 
-  const ready = await waitForCdp(15_000);
-  appendCrawlerLog(ready ? `CDP browser is ready on port ${cdpPort}.` : `CDP browser did not respond within 15s; MediaCrawler will keep waiting on port ${cdpPort}.`);
+  const ready = await waitForCdp(30_000);
+  if (!ready) {
+    throw new Error(`CDP browser did not respond on port ${cdpPort}. Close stale Chrome windows and restart, or run npm run local:stop before starting again.`);
+  }
+  appendCrawlerLog(`CDP browser is ready on port ${cdpPort}.`);
 }
 
 async function isCdpAvailable() {
