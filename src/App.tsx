@@ -411,6 +411,8 @@ function MediaCrawlerPanel({
   const [status, setStatus] = useState<MediaCrawlerStatus>({ running: false, status: "idle", logs: [] });
   const [collectorError, setCollectorError] = useState("");
   const lastLoadedCapturePathRef = useRef("");
+  const logViewportRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickLogToBottomRef = useRef(true);
 
   useEffect(() => {
     if (!status.running) {
@@ -432,6 +434,23 @@ function MediaCrawlerPanel({
     lastLoadedCapturePathRef.current = status.capturePath;
     void loadCapture(status.capturePath, true);
   }, [status.capturePath, status.running]);
+
+  useEffect(() => {
+    const viewport = logViewportRef.current;
+    if (!viewport || !shouldStickLogToBottomRef.current) {
+      return;
+    }
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [status.logs]);
+
+  function handleLogScroll() {
+    const viewport = logViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    shouldStickLogToBottomRef.current = distanceFromBottom < 48;
+  }
 
   async function refreshStatus() {
     const response = await fetch(`${apiBaseUrl()}/api/mediacrawler/status`);
@@ -564,7 +583,7 @@ function MediaCrawlerPanel({
             </AlertDescription>
           </Alert>
         ) : null}
-        <ScrollArea className="h-56 max-w-full overflow-hidden rounded-lg border bg-muted/30 p-3">
+        <ScrollArea viewportRef={logViewportRef} onScrollCapture={handleLogScroll} className="h-56 max-w-full overflow-hidden rounded-lg border bg-muted/30 p-3">
           <pre className="max-w-full whitespace-pre-wrap break-words font-mono text-xs leading-5">{status.logs.length ? status.logs.join("\n") : "等待采集任务..."}</pre>
         </ScrollArea>
       </CardContent>
