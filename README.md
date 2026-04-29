@@ -181,6 +181,7 @@ npm run build
 
 ## 许可说明
 
-- 如果准备公开发布，建议在仓库根目录补充明确的开源 LICENSE。
-- `vendor/mediacrawler-xhs` 来源于 [NanmiCoder/MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)，保留原项目 LICENSE。
-- 使用小红书采集能力时，请遵守平台规则和相关法律法规，保持低频、低并发、学习研究用途。
+- 本仓库公开用于毕业设计展示、学习和研究复现；当前未声明一个覆盖整个仓库的通用开源许可证。
+- `vendor/mediacrawler-xhs` 来源于 [NanmiCoder/MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)，该目录保留原项目 `NON-COMMERCIAL LEARNING LICENSE 1.1`，仅限非商业学习和研究用途。
+- `data/`、`bert/models/`、`docs/thesis/` 等本地数据、模型和论文材料不属于公开仓库内容。
+- 使用小红书采集能力时，请遵守平台规则和相关法律法规，保持低频、低并发，不得用于商业化、大规模爬取或干扰平台运行的行为。
