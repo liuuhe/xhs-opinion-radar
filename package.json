@@ -10,6 +10,7 @@
     "local:stop": "powershell -ExecutionPolicy Bypass -File scripts/stop-local.ps1",
     "local:webui": "npm run build:local && node scripts/local-webui.mjs",
     "local:bert": "powershell -ExecutionPolicy Bypass -File scripts/start-local-bert.ps1",
+    "setup:bert": "powershell -ExecutionPolicy Bypass -File scripts/setup-bert.ps1",
     "build": "tsc -b && npm run build:local",
     "preview": "npm run build:local && vite preview --config vite.local.config.ts --host 0.0.0.0",
     "mediacrawler:xhs": "powershell -ExecutionPolicy Bypass -File scripts/run-mediacrawler-xhs.ps1",
