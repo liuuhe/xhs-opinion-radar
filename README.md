@@ -69,7 +69,26 @@ npm run setup:bert
 
 ## 模型文件
 
-公开仓库不包含训练好的 BERT 模型、采集数据、论文材料或本地日志。默认启动脚本会寻找：
+公开仓库不直接跟踪训练好的 BERT 模型、采集数据、论文材料或本地日志。当前默认模型放在 GitHub Release：
+
+```text
+https://github.com/liuuhe/xhs-opinion-radar/releases/tag/bert-model
+```
+
+下载并解压模型：
+
+```powershell
+New-Item -ItemType Directory -Force bert\models | Out-Null
+Invoke-WebRequest `
+  -Uri "https://github.com/liuuhe/xhs-opinion-radar/releases/download/bert-model/xhs-bert-sentiment-oldflow-v2-seed42-e5-b16-lr2e5.zip" `
+  -OutFile "bert\models\xhs-bert-sentiment-oldflow-v2-seed42-e5-b16-lr2e5.zip"
+Expand-Archive `
+  -LiteralPath "bert\models\xhs-bert-sentiment-oldflow-v2-seed42-e5-b16-lr2e5.zip" `
+  -DestinationPath "bert\models" `
+  -Force
+```
+
+解压后默认启动脚本会寻找：
 
 ```text
 bert\models\xhs-bert-sentiment-oldflow-v2-seed42-e5-b16-lr2e5
